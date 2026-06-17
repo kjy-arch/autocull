@@ -27,13 +27,22 @@ def _unique_dest(dest_dir: Path, name: str) -> Path:
 
 
 def pick_best(group: list[Path], analyses: dict) -> Path:
-    has_any_face = any(analyses[p]["has_face"] for p in group)
+    from analyzer import SMILE_THRESHOLD
 
-    candidates = group
-    if has_any_face:
-        open_eyes = [p for p in group if not analyses[p]["eyes_closed"]]
-        if open_eyes:
-            candidates = open_eyes
+    face_photos = [p for p in group if analyses[p]["has_face"]]
+
+    if not face_photos:
+        return max(group, key=lambda p: analyses[p]["blur_score"])
+
+    candidates = face_photos
+
+    open_eyes = [p for p in face_photos if not analyses[p]["eyes_closed"]]
+    if open_eyes:
+        candidates = open_eyes
+
+    smiling = [p for p in candidates if analyses[p]["smile_score"] >= SMILE_THRESHOLD]
+    if smiling:
+        candidates = smiling
 
     return max(candidates, key=lambda p: analyses[p]["blur_score"])
 
@@ -49,8 +58,11 @@ def run(input_dir: Path, output_dir: Path, gap: int | None, blur_threshold: floa
         return
 
     print(f"Found {len(images)} images")
+    print("Analyzing images...")
+    all_analyses = {p: analyze(p) for p in images}
+    face_counts = {p: all_analyses[p]["face_count"] for p in images}
 
-    groups = group_by_time(images, gap_seconds=gap)
+    groups = group_by_time(images, gap_seconds=gap, use_clip=True, face_counts=face_counts)
     skipped = len(images) - sum(len(g) for g in groups)
     if skipped:
         print(f"Warning: {skipped} image(s) skipped — no EXIF timestamp")
@@ -69,29 +81,24 @@ def run(input_dir: Path, output_dir: Path, gap: int | None, blur_threshold: floa
 
     for i, group in enumerate(groups, 1):
         print(f"Session {i} ({len(group)} photo{'s' if len(group) > 1 else ''}):")
-        analyses = {p: analyze(p) for p in group}
+        analyses = {p: all_analyses[p] for p in group}
 
         if len(group) == 1:
             p = group[0]
-            if analyses[p]["blur_score"] >= blur_threshold:
-                dest = _unique_dest(best_dir, _best_filename(p))
-                transfer(str(p), str(dest))
-                print(f"  ✓ {p.name} → {dest.name}")
-                kept += 1
-            else:
-                transfer(str(p), str(rejected_dir / p.name))
-                print(f"  ✗ {p.name} (blurry)")
-                rejected += 1
+            dest = _unique_dest(best_dir, _best_filename(p))
+            transfer(str(p), str(dest))
+            print(f"  [keep] {p.name} -> {dest.name}")
+            kept += 1
             continue
 
         best = pick_best(group, analyses)
 
         for p in group:
             a = analyses[p]
-            if p == best and a["blur_score"] >= blur_threshold:
+            if p == best:
                 dest = _unique_dest(best_dir, _best_filename(p))
                 transfer(str(p), str(dest))
-                print(f"  ✓ {p.name} → {dest.name}")
+                print(f"  [keep] {p.name} -> {dest.name}")
                 kept += 1
             else:
                 if a["eyes_closed"]:
@@ -101,10 +108,10 @@ def run(input_dir: Path, output_dir: Path, gap: int | None, blur_threshold: floa
                 else:
                     reason = "not best"
                 transfer(str(p), str(rejected_dir / p.name))
-                print(f"  ✗ {p.name} ({reason})")
+                print(f"  [skip] {p.name} ({reason})")
                 rejected += 1
 
-    print(f"\nDone — kept: {kept}, rejected: {rejected}")
+    print(f"\nDone - kept: {kept}, rejected: {rejected}")
     print(f"Results in: {output_dir}")
 
 

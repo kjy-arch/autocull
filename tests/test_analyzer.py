@@ -25,7 +25,7 @@ def _solid(path: Path) -> Path:
 class TestAnalyze:
     def test_returns_expected_keys(self, tmp_path):
         result = analyze(_checkerboard(tmp_path / "img.jpg"))
-        assert set(result.keys()) == {"blur_score", "has_face", "eyes_closed"}
+        assert set(result.keys()) == {"blur_score", "has_face", "eyes_closed", "smile_score", "face_count"}
 
     def test_blur_score_is_float(self, tmp_path):
         assert isinstance(analyze(_checkerboard(tmp_path / "img.jpg"))["blur_score"], float)
@@ -40,9 +40,12 @@ class TestAnalyze:
             "blur_score": 0.0,
             "has_face": False,
             "eyes_closed": False,
+            "smile_score": 0.0,
+            "face_count": 0,
         }
 
     def test_plain_image_has_no_face(self, tmp_path):
         result = analyze(_checkerboard(tmp_path / "img.jpg"))
         assert result["has_face"] is False
         assert result["eyes_closed"] is False
+        assert result["smile_score"] == 0.0

@@ -27,31 +27,47 @@ class TestPickBest:
     def test_picks_sharpest_when_no_faces(self):
         paths = [Path("a.jpg"), Path("b.jpg"), Path("c.jpg")]
         analyses = {
-            Path("a.jpg"): {"blur_score": 50.0, "has_face": False, "eyes_closed": False},
-            Path("b.jpg"): {"blur_score": 200.0, "has_face": False, "eyes_closed": False},
-            Path("c.jpg"): {"blur_score": 100.0, "has_face": False, "eyes_closed": False},
+            Path("a.jpg"): {"blur_score": 50.0, "has_face": False, "eyes_closed": False, "smile_score": 0.0, "face_count": 0},
+            Path("b.jpg"): {"blur_score": 200.0, "has_face": False, "eyes_closed": False, "smile_score": 0.0, "face_count": 0},
+            Path("c.jpg"): {"blur_score": 100.0, "has_face": False, "eyes_closed": False, "smile_score": 0.0, "face_count": 0},
         }
         assert pick_best(paths, analyses) == Path("b.jpg")
 
     def test_prefers_open_eyes_over_sharper_closed(self):
         paths = [Path("a.jpg"), Path("b.jpg")]
         analyses = {
-            Path("a.jpg"): {"blur_score": 500.0, "has_face": True, "eyes_closed": True},
-            Path("b.jpg"): {"blur_score": 100.0, "has_face": True, "eyes_closed": False},
+            Path("a.jpg"): {"blur_score": 500.0, "has_face": True, "eyes_closed": True, "smile_score": 0.0, "face_count": 1},
+            Path("b.jpg"): {"blur_score": 100.0, "has_face": True, "eyes_closed": False, "smile_score": 0.0, "face_count": 1},
         }
         assert pick_best(paths, analyses) == Path("b.jpg")
 
     def test_falls_back_to_sharpest_when_all_closed(self):
         paths = [Path("a.jpg"), Path("b.jpg")]
         analyses = {
-            Path("a.jpg"): {"blur_score": 200.0, "has_face": True, "eyes_closed": True},
-            Path("b.jpg"): {"blur_score": 100.0, "has_face": True, "eyes_closed": True},
+            Path("a.jpg"): {"blur_score": 200.0, "has_face": True, "eyes_closed": True, "smile_score": 0.0, "face_count": 1},
+            Path("b.jpg"): {"blur_score": 100.0, "has_face": True, "eyes_closed": True, "smile_score": 0.0, "face_count": 1},
+        }
+        assert pick_best(paths, analyses) == Path("a.jpg")
+
+    def test_prefers_smiling_over_sharper_non_smiling(self):
+        paths = [Path("a.jpg"), Path("b.jpg")]
+        analyses = {
+            Path("a.jpg"): {"blur_score": 500.0, "has_face": True, "eyes_closed": False, "smile_score": 0.1, "face_count": 1},
+            Path("b.jpg"): {"blur_score": 100.0, "has_face": True, "eyes_closed": False, "smile_score": 0.8, "face_count": 1},
+        }
+        assert pick_best(paths, analyses) == Path("b.jpg")
+
+    def test_falls_back_to_sharpest_when_none_smiling(self):
+        paths = [Path("a.jpg"), Path("b.jpg")]
+        analyses = {
+            Path("a.jpg"): {"blur_score": 200.0, "has_face": True, "eyes_closed": False, "smile_score": 0.1, "face_count": 1},
+            Path("b.jpg"): {"blur_score": 100.0, "has_face": True, "eyes_closed": False, "smile_score": 0.1, "face_count": 1},
         }
         assert pick_best(paths, analyses) == Path("a.jpg")
 
     def test_single_photo(self):
         paths = [Path("a.jpg")]
-        analyses = {Path("a.jpg"): {"blur_score": 150.0, "has_face": True, "eyes_closed": False}}
+        analyses = {Path("a.jpg"): {"blur_score": 150.0, "has_face": True, "eyes_closed": False, "smile_score": 0.5, "face_count": 1}}
         assert pick_best(paths, analyses) == Path("a.jpg")
 
 
@@ -94,6 +110,11 @@ class TestUniqueDest:
 
 
 class TestRun:
+    @pytest.fixture(autouse=True)
+    def no_clip(self):
+        with patch("grouper._embed", return_value=None):
+            yield
+
     def test_rejects_nonexistent_input(self, tmp_path, capsys):
         run(tmp_path / "nonexistent", tmp_path / "output", gap=15, blur_threshold=0.0, mode="copy")
         assert "Error" in capsys.readouterr().out
@@ -124,13 +145,13 @@ class TestRun:
             run(input_dir, tmp_path / "out", gap=15, blur_threshold=0.0, mode="copy")
         assert (tmp_path / "out" / "best" / "20240101_unknown.jpg").exists()
 
-    def test_blurry_single_image_goes_to_rejected(self, tmp_path):
+    def test_single_image_always_kept_regardless_of_blur(self, tmp_path):
         input_dir = tmp_path / "in"
         input_dir.mkdir()
         _make_jpeg(input_dir / "a.jpg", "2024:01:01 10:00:00", sharp=False)
         with patch("autocull.get_gps", return_value=None):
             run(input_dir, tmp_path / "out", gap=15, blur_threshold=10000.0, mode="copy")
-        assert (tmp_path / "out" / "rejected" / "a.jpg").exists()
+        assert (tmp_path / "out" / "best" / "20240101_unknown.jpg").exists()
 
     def test_best_of_two_goes_to_best_rejected_keeps_original_name(self, tmp_path):
         input_dir = tmp_path / "in"

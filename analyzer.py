@@ -26,11 +26,28 @@ def _make_landmarker() -> _mp_vision.FaceLandmarker:
         base_options=_mp_python.BaseOptions(model_asset_path=str(_MODEL_PATH)),
         num_faces=5,
         min_face_detection_confidence=0.5,
+        output_face_blendshapes=True,
     )
     return _mp_vision.FaceLandmarker.create_from_options(options)
 
 
 _landmarker = _make_landmarker()
+
+
+_SMILE_NAMES = {"mouthSmileLeft", "mouthSmileRight"}
+SMILE_THRESHOLD = 0.3
+
+
+def _smile_score(blendshapes) -> float:
+    """Average mouthSmile score across all detected faces."""
+    if not blendshapes:
+        return 0.0
+    scores = []
+    for face in blendshapes:
+        vals = [c.score for c in face if c.category_name in _SMILE_NAMES]
+        if vals:
+            scores.append(sum(vals) / len(vals))
+    return sum(scores) / len(scores) if scores else 0.0
 
 
 def _ear(landmarks, indices: list[int], w: int, h: int) -> float:
@@ -49,9 +66,14 @@ def analyze(path: Path) -> dict:
         has_face    bool
         eyes_closed bool   — True if any detected face has a closed eye
     """
-    img = cv2.imread(str(path))
+    # cv2.imread fails on non-ASCII paths on Windows; read via numpy instead
+    try:
+        buf = np.frombuffer(Path(path).read_bytes(), dtype=np.uint8)
+        img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+    except Exception:
+        img = None
     if img is None:
-        return {"blur_score": 0.0, "has_face": False, "eyes_closed": False}
+        return {"blur_score": 0.0, "has_face": False, "eyes_closed": False, "smile_score": 0.0, "face_count": 0}
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     blur_score = float(cv2.Laplacian(gray, cv2.CV_64F).var())
@@ -62,7 +84,7 @@ def analyze(path: Path) -> dict:
     result = _landmarker.detect(mp_image)
 
     if not result.face_landmarks:
-        return {"blur_score": blur_score, "has_face": False, "eyes_closed": False}
+        return {"blur_score": blur_score, "has_face": False, "eyes_closed": False, "smile_score": 0.0, "face_count": 0}
 
     eyes_closed = any(
         _ear(face, _LEFT_EYE, w, h) < EAR_CLOSED_THRESHOLD
@@ -70,4 +92,10 @@ def analyze(path: Path) -> dict:
         for face in result.face_landmarks
     )
 
-    return {"blur_score": blur_score, "has_face": True, "eyes_closed": eyes_closed}
+    return {
+        "blur_score": blur_score,
+        "has_face": True,
+        "eyes_closed": eyes_closed,
+        "smile_score": _smile_score(result.face_blendshapes),
+        "face_count": len(result.face_landmarks),
+    }

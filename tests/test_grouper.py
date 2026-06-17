@@ -1,5 +1,6 @@
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 import piexif
 import pytest
@@ -107,18 +108,61 @@ class TestFindSessionThreshold:
 class TestAdaptiveGrouping:
     def test_single_burst_stays_together(self, tmp_path):
         photos = [_make_jpeg(tmp_path / f"p{i}.jpg", f"2024:01:01 10:00:0{i}") for i in range(5)]
-        assert len(group_by_time(photos)) == 1
+        with patch("grouper._embed", return_value=None):
+            assert len(group_by_time(photos)) == 1
 
     def test_two_bursts_separated_by_minutes_split_automatically(self, tmp_path):
         burst1 = [_make_jpeg(tmp_path / f"a{i}.jpg", f"2024:01:01 10:00:0{i}") for i in range(5)]
         burst2 = [_make_jpeg(tmp_path / f"b{i}.jpg", f"2024:01:01 10:10:0{i}") for i in range(5)]
-        groups = group_by_time(burst1 + burst2)
+        with patch("grouper._embed", return_value=None):
+            groups = group_by_time(burst1 + burst2)
         assert len(groups) == 2
 
     def test_gap_seconds_overrides_auto_detection(self, tmp_path):
-        # With forced 15s gap, 60s separation splits into 2 groups
         p1 = _make_jpeg(tmp_path / "a.jpg", "2024:01:01 10:00:00")
         p2 = _make_jpeg(tmp_path / "b.jpg", "2024:01:01 10:01:00")
         assert len(group_by_time([p1, p2], gap_seconds=15)) == 2
-        # Auto-detection with only 2 photos falls back to 300s, so 60s stays together
-        assert len(group_by_time([p1, p2])) == 1
+        with patch("grouper._embed", return_value=None):
+            assert len(group_by_time([p1, p2])) == 1
+
+    def test_clip_splits_scene_change_within_time_threshold(self, tmp_path):
+        import torch
+        p1 = _make_jpeg(tmp_path / "a.jpg", "2024:01:01 10:00:00")
+        p2 = _make_jpeg(tmp_path / "b.jpg", "2024:01:01 10:00:10")
+        # Simulate very different embeddings (cosine sim ≈ 0)
+        emb_a = torch.tensor([[1.0, 0.0]])
+        emb_b = torch.tensor([[0.0, 1.0]])
+        with patch("grouper._embed", side_effect=[emb_a, emb_b]):
+            groups = group_by_time([p1, p2], gap_seconds=30, use_clip=True)
+        assert len(groups) == 2
+
+    def test_clip_keeps_similar_scenes_together(self, tmp_path):
+        import torch
+        p1 = _make_jpeg(tmp_path / "a.jpg", "2024:01:01 10:00:00")
+        p2 = _make_jpeg(tmp_path / "b.jpg", "2024:01:01 10:00:10")
+        # Simulate identical embeddings (cosine sim = 1.0)
+        emb = torch.tensor([[1.0, 0.0]])
+        with patch("grouper._embed", return_value=emb):
+            groups = group_by_time([p1, p2], gap_seconds=30, use_clip=True)
+        assert len(groups) == 1
+
+    def test_face_count_change_splits_session(self, tmp_path):
+        p1 = _make_jpeg(tmp_path / "a.jpg", "2024:01:01 10:00:00")
+        p2 = _make_jpeg(tmp_path / "b.jpg", "2024:01:01 10:00:05")
+        face_counts = {p1: 2, p2: 1}
+        groups = group_by_time([p1, p2], gap_seconds=30, face_counts=face_counts)
+        assert len(groups) == 2
+
+    def test_face_count_same_stays_together(self, tmp_path):
+        p1 = _make_jpeg(tmp_path / "a.jpg", "2024:01:01 10:00:00")
+        p2 = _make_jpeg(tmp_path / "b.jpg", "2024:01:01 10:00:05")
+        face_counts = {p1: 2, p2: 2}
+        groups = group_by_time([p1, p2], gap_seconds=30, face_counts=face_counts)
+        assert len(groups) == 1
+
+    def test_zero_face_count_not_split(self, tmp_path):
+        p1 = _make_jpeg(tmp_path / "a.jpg", "2024:01:01 10:00:00")
+        p2 = _make_jpeg(tmp_path / "b.jpg", "2024:01:01 10:00:05")
+        face_counts = {p1: 0, p2: 2}
+        groups = group_by_time([p1, p2], gap_seconds=30, face_counts=face_counts)
+        assert len(groups) == 1
