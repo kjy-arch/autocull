@@ -2,15 +2,17 @@ from pathlib import Path
 from datetime import datetime
 from PIL import Image
 
-EXIF_DATETIME_ORIGINAL = 36867  # DateTimeOriginal tag
+EXIF_DATETIME_ORIGINAL = 36867
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
+_EXIF_IFD = 0x8769  # ExifIFD sub-directory pointer
 
 
 def get_timestamp(path: Path) -> datetime | None:
     try:
-        exif = Image.open(path)._getexif()
-        if exif and EXIF_DATETIME_ORIGINAL in exif:
-            return datetime.strptime(exif[EXIF_DATETIME_ORIGINAL], "%Y:%m:%d %H:%M:%S")
+        img = Image.open(path)
+        dt_str = img.getexif().get_ifd(_EXIF_IFD).get(EXIF_DATETIME_ORIGINAL)
+        if dt_str:
+            return datetime.strptime(dt_str, "%Y:%m:%d %H:%M:%S")
     except Exception:
         pass
     return None

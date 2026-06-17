@@ -1,0 +1,79 @@
+from datetime import datetime
+from pathlib import Path
+
+import piexif
+import pytest
+from PIL import Image
+
+from grouper import find_images, get_timestamp, group_by_time
+
+
+def _make_jpeg(path: Path, dt_str: str | None = None) -> Path:
+    img = Image.new("RGB", (10, 10), (128, 128, 128))
+    if dt_str:
+        exif_bytes = piexif.dump({"Exif": {piexif.ExifIFD.DateTimeOriginal: dt_str.encode()}})
+        img.save(str(path), "JPEG", exif=exif_bytes)
+    else:
+        img.save(str(path), "JPEG")
+    return path
+
+
+class TestGetTimestamp:
+    def test_returns_datetime_for_jpeg_with_exif(self, tmp_path):
+        path = _make_jpeg(tmp_path / "a.jpg", "2024:06:15 10:30:00")
+        assert get_timestamp(path) == datetime(2024, 6, 15, 10, 30, 0)
+
+    def test_returns_none_without_exif(self, tmp_path):
+        path = _make_jpeg(tmp_path / "a.jpg")
+        assert get_timestamp(path) is None
+
+    def test_returns_none_for_missing_file(self, tmp_path):
+        assert get_timestamp(tmp_path / "missing.jpg") is None
+
+
+class TestGroupByTime:
+    def test_empty_returns_empty(self):
+        assert group_by_time([]) == []
+
+    def test_single_image_forms_one_group(self, tmp_path):
+        p = _make_jpeg(tmp_path / "a.jpg", "2024:01:01 10:00:00")
+        assert group_by_time([p], gap_seconds=15) == [[p]]
+
+    def test_two_images_within_gap_are_grouped(self, tmp_path):
+        p1 = _make_jpeg(tmp_path / "a.jpg", "2024:01:01 10:00:00")
+        p2 = _make_jpeg(tmp_path / "b.jpg", "2024:01:01 10:00:10")
+        groups = group_by_time([p1, p2], gap_seconds=15)
+        assert len(groups) == 1
+        assert set(groups[0]) == {p1, p2}
+
+    def test_two_images_beyond_gap_form_separate_groups(self, tmp_path):
+        p1 = _make_jpeg(tmp_path / "a.jpg", "2024:01:01 10:00:00")
+        p2 = _make_jpeg(tmp_path / "b.jpg", "2024:01:01 10:01:00")
+        assert len(group_by_time([p1, p2], gap_seconds=15)) == 2
+
+    def test_images_without_timestamp_are_excluded(self, tmp_path):
+        p1 = _make_jpeg(tmp_path / "a.jpg", "2024:01:01 10:00:00")
+        p2 = _make_jpeg(tmp_path / "b.jpg")
+        groups = group_by_time([p1, p2], gap_seconds=15)
+        assert len(groups) == 1
+        assert groups[0] == [p1]
+
+    def test_groups_are_sorted_by_timestamp(self, tmp_path):
+        p_late = _make_jpeg(tmp_path / "a.jpg", "2024:01:01 10:00:10")
+        p_early = _make_jpeg(tmp_path / "b.jpg", "2024:01:01 10:00:00")
+        groups = group_by_time([p_late, p_early], gap_seconds=15)
+        assert groups[0] == [p_early, p_late]
+
+
+class TestFindImages:
+    def test_finds_jpeg_files(self, tmp_path):
+        (tmp_path / "a.jpg").write_bytes(b"")
+        (tmp_path / "b.jpeg").write_bytes(b"")
+        (tmp_path / "c.JPG").write_bytes(b"")
+        assert len(find_images(tmp_path)) == 3
+
+    def test_ignores_non_image_files(self, tmp_path):
+        (tmp_path / "a.jpg").write_bytes(b"")
+        (tmp_path / "b.txt").write_bytes(b"")
+        (tmp_path / "c.mp4").write_bytes(b"")
+        assert len(find_images(tmp_path)) == 1

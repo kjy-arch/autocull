@@ -19,6 +19,10 @@ def pick_best(group: list[Path], analyses: dict) -> Path:
 
 
 def run(input_dir: Path, output_dir: Path, gap: int, blur_threshold: float, mode: str):
+    if not input_dir.exists() or not input_dir.is_dir():
+        print(f"Error: input directory not found: {input_dir}")
+        return
+
     images = find_images(input_dir)
     if not images:
         print("No images found.")
@@ -27,6 +31,9 @@ def run(input_dir: Path, output_dir: Path, gap: int, blur_threshold: float, mode
     print(f"Found {len(images)} images")
 
     groups = group_by_time(images, gap_seconds=gap)
+    skipped = len(images) - sum(len(g) for g in groups)
+    if skipped:
+        print(f"Warning: {skipped} image(s) skipped — no EXIF timestamp")
     print(f"Grouped into {len(groups)} session(s)\n")
 
     best_dir = output_dir / "best"

@@ -1,18 +1,36 @@
+import urllib.request
 import cv2
 import numpy as np
 import mediapipe as mp
+from mediapipe.tasks import python as _mp_python
+from mediapipe.tasks.python import vision as _mp_vision
 from pathlib import Path
 
-_face_mesh = mp.solutions.face_mesh.FaceMesh(
-    static_image_mode=True,
-    max_num_faces=5,
-    refine_landmarks=True,
-)
+_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+_MODEL_PATH = Path(__file__).parent / "face_landmarker.task"
 
-# MediaPipe Face Mesh eye landmark indices
 _LEFT_EYE = [362, 385, 387, 263, 373, 380]
 _RIGHT_EYE = [33, 160, 158, 133, 153, 144]
 EAR_CLOSED_THRESHOLD = 0.2
+
+
+def _ensure_model() -> None:
+    if not _MODEL_PATH.exists():
+        print("Downloading face landmark model (~23MB)...")
+        urllib.request.urlretrieve(_MODEL_URL, _MODEL_PATH)
+
+
+def _make_landmarker() -> _mp_vision.FaceLandmarker:
+    _ensure_model()
+    options = _mp_vision.FaceLandmarkerOptions(
+        base_options=_mp_python.BaseOptions(model_asset_path=str(_MODEL_PATH)),
+        num_faces=5,
+        min_face_detection_confidence=0.5,
+    )
+    return _mp_vision.FaceLandmarker.create_from_options(options)
+
+
+_landmarker = _make_landmarker()
 
 
 def _ear(landmarks, indices: list[int], w: int, h: int) -> float:
@@ -40,15 +58,16 @@ def analyze(path: Path) -> dict:
 
     h, w = img.shape[:2]
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    result = _face_mesh.process(rgb)
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+    result = _landmarker.detect(mp_image)
 
-    if not result.multi_face_landmarks:
+    if not result.face_landmarks:
         return {"blur_score": blur_score, "has_face": False, "eyes_closed": False}
 
     eyes_closed = any(
-        _ear(face.landmark, _LEFT_EYE, w, h) < EAR_CLOSED_THRESHOLD
-        or _ear(face.landmark, _RIGHT_EYE, w, h) < EAR_CLOSED_THRESHOLD
-        for face in result.multi_face_landmarks
+        _ear(face, _LEFT_EYE, w, h) < EAR_CLOSED_THRESHOLD
+        or _ear(face, _RIGHT_EYE, w, h) < EAR_CLOSED_THRESHOLD
+        for face in result.face_landmarks
     )
 
     return {"blur_score": blur_score, "has_face": True, "eyes_closed": eyes_closed}
