@@ -18,7 +18,7 @@ def pick_best(group: list[Path], analyses: dict) -> Path:
     return max(candidates, key=lambda p: analyses[p]["blur_score"])
 
 
-def run(input_dir: Path, output_dir: Path, gap: int, blur_threshold: float, mode: str):
+def run(input_dir: Path, output_dir: Path, gap: int | None, blur_threshold: float, mode: str):
     if not input_dir.exists() or not input_dir.is_dir():
         print(f"Error: input directory not found: {input_dir}")
         return
@@ -34,7 +34,8 @@ def run(input_dir: Path, output_dir: Path, gap: int, blur_threshold: float, mode
     skipped = len(images) - sum(len(g) for g in groups)
     if skipped:
         print(f"Warning: {skipped} image(s) skipped — no EXIF timestamp")
-    print(f"Grouped into {len(groups)} session(s)\n")
+    gap_info = f"{gap}s" if gap is not None else "auto"
+    print(f"Grouped into {len(groups)} session(s) [gap={gap_info}]\n")
 
     best_dir = output_dir / "best"
     rejected_dir = output_dir / "rejected"
@@ -91,7 +92,12 @@ def main():
     )
     parser.add_argument("--input", required=True, help="Folder containing photos")
     parser.add_argument("--output", required=True, help="Folder for sorted results")
-    parser.add_argument("--gap", type=int, default=15, help="Session gap in seconds (default: 15)")
+    parser.add_argument(
+        "--gap",
+        type=int,
+        default=None,
+        help="Session gap in seconds (default: auto-detect from photo distribution)",
+    )
     parser.add_argument(
         "--blur-threshold",
         type=float,

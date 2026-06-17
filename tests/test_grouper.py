@@ -5,7 +5,7 @@ import piexif
 import pytest
 from PIL import Image
 
-from grouper import find_images, get_timestamp, group_by_time
+from grouper import _FALLBACK_GAP, _find_session_threshold, find_images, get_timestamp, group_by_time
 
 
 def _make_jpeg(path: Path, dt_str: str | None = None) -> Path:
@@ -77,3 +77,48 @@ class TestFindImages:
         (tmp_path / "b.txt").write_bytes(b"")
         (tmp_path / "c.mp4").write_bytes(b"")
         assert len(find_images(tmp_path)) == 1
+
+
+class TestFindSessionThreshold:
+    def test_clear_boundary_returns_midpoint(self):
+        # 10 short gaps + 1 large gap → clear boundary
+        gaps = [1.0] * 10 + [300.0]
+        t = _find_session_threshold(gaps)
+        assert 1.0 < t < 300.0
+
+    def test_uniform_gaps_return_fallback(self):
+        # No clear boundary → fallback
+        assert _find_session_threshold([1.0] * 20) == _FALLBACK_GAP
+
+    def test_single_gap_returns_fallback(self):
+        assert _find_session_threshold([5.0]) == _FALLBACK_GAP
+
+    def test_two_clear_clusters(self):
+        gaps = [1.0] * 5 + [600.0] * 2
+        t = _find_session_threshold(gaps)
+        assert 1.0 < t < 600.0
+
+    def test_small_ratio_returns_fallback(self):
+        # 1s vs 2s is not a meaningful session boundary
+        gaps = [1.0] * 10 + [2.0] * 10
+        assert _find_session_threshold(gaps) == _FALLBACK_GAP
+
+
+class TestAdaptiveGrouping:
+    def test_single_burst_stays_together(self, tmp_path):
+        photos = [_make_jpeg(tmp_path / f"p{i}.jpg", f"2024:01:01 10:00:0{i}") for i in range(5)]
+        assert len(group_by_time(photos)) == 1
+
+    def test_two_bursts_separated_by_minutes_split_automatically(self, tmp_path):
+        burst1 = [_make_jpeg(tmp_path / f"a{i}.jpg", f"2024:01:01 10:00:0{i}") for i in range(5)]
+        burst2 = [_make_jpeg(tmp_path / f"b{i}.jpg", f"2024:01:01 10:10:0{i}") for i in range(5)]
+        groups = group_by_time(burst1 + burst2)
+        assert len(groups) == 2
+
+    def test_gap_seconds_overrides_auto_detection(self, tmp_path):
+        # With forced 15s gap, 60s separation splits into 2 groups
+        p1 = _make_jpeg(tmp_path / "a.jpg", "2024:01:01 10:00:00")
+        p2 = _make_jpeg(tmp_path / "b.jpg", "2024:01:01 10:01:00")
+        assert len(group_by_time([p1, p2], gap_seconds=15)) == 2
+        # Auto-detection with only 2 photos falls back to 300s, so 60s stays together
+        assert len(group_by_time([p1, p2])) == 1
