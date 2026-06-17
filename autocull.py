@@ -2,8 +2,28 @@ import argparse
 import shutil
 from pathlib import Path
 
-from grouper import find_images, group_by_time
+from grouper import find_images, group_by_time, get_timestamp
 from analyzer import analyze
+from location import get_gps, place_name
+
+
+def _best_filename(path: Path) -> str:
+    ts = get_timestamp(path)
+    date_str = ts.strftime("%Y%m%d") if ts else "unknown"
+    coords = get_gps(path)
+    loc = place_name(*coords) if coords else None
+    return f"{date_str}_{loc or 'unknown'}{path.suffix.lower()}"
+
+
+def _unique_dest(dest_dir: Path, name: str) -> Path:
+    dest = dest_dir / name
+    if not dest.exists():
+        return dest
+    stem, suffix = Path(name).stem, Path(name).suffix
+    i = 2
+    while (dest_dir / f"{stem}_{i}{suffix}").exists():
+        i += 1
+    return dest_dir / f"{stem}_{i}{suffix}"
 
 
 def pick_best(group: list[Path], analyses: dict) -> Path:
@@ -54,8 +74,9 @@ def run(input_dir: Path, output_dir: Path, gap: int | None, blur_threshold: floa
         if len(group) == 1:
             p = group[0]
             if analyses[p]["blur_score"] >= blur_threshold:
-                transfer(str(p), str(best_dir / p.name))
-                print(f"  ✓ {p.name}")
+                dest = _unique_dest(best_dir, _best_filename(p))
+                transfer(str(p), str(dest))
+                print(f"  ✓ {p.name} → {dest.name}")
                 kept += 1
             else:
                 transfer(str(p), str(rejected_dir / p.name))
@@ -68,8 +89,9 @@ def run(input_dir: Path, output_dir: Path, gap: int | None, blur_threshold: floa
         for p in group:
             a = analyses[p]
             if p == best and a["blur_score"] >= blur_threshold:
-                transfer(str(p), str(best_dir / p.name))
-                print(f"  ✓ {p.name}")
+                dest = _unique_dest(best_dir, _best_filename(p))
+                transfer(str(p), str(dest))
+                print(f"  ✓ {p.name} → {dest.name}")
                 kept += 1
             else:
                 if a["eyes_closed"]:
