@@ -62,7 +62,7 @@ class TestAnalyze:
             result = analyze(path)
         mock_haar.assert_called_once()
         assert result["has_face"] is True
-        assert result["face_count"] == 2
+        assert result["face_count"] == 0  # Haar count excluded from face_split
         assert result["eyes_closed"] is False
         assert result["smile_score"] == 0.0
 

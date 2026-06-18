@@ -42,15 +42,22 @@ def _get_landmarker() -> _mp_vision.FaceLandmarker:
 _SMILE_NAMES = {"mouthSmileLeft", "mouthSmileRight"}
 SMILE_THRESHOLD = 0.3
 
-_face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+def _get_cascade() -> cv2.CascadeClassifier:
+    if not hasattr(_local, "cascade"):
+        _local.cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        )
+    return _local.cascade
 
 
 def _haar_face_count(img: np.ndarray) -> int:
     h, w = img.shape[:2]
+    if w < 32 or h < 32:
+        return 0
     scale = min(1.0, 1280 / w)
     small = cv2.resize(img, (int(w * scale), int(h * scale))) if scale < 1.0 else img
     gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-    faces = _face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4)
+    faces = _get_cascade().detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4)
     return len(faces)
 
 
@@ -102,7 +109,9 @@ def analyze(path: Path) -> dict:
     if not result.face_landmarks:
         haar_count = _haar_face_count(img)
         if haar_count > 0:
-            return {"blur_score": blur_score, "has_face": True, "eyes_closed": False, "smile_score": 0.0, "face_count": haar_count}
+            # face_count=0 intentional: Haar counts differ from MediaPipe counts
+            # so exclude from face_split to avoid spurious session breaks
+            return {"blur_score": blur_score, "has_face": True, "eyes_closed": False, "smile_score": 0.0, "face_count": 0}
         return {"blur_score": blur_score, "has_face": False, "eyes_closed": False, "smile_score": 0.0, "face_count": 0}
 
     eyes_closed = any(

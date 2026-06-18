@@ -142,18 +142,12 @@ def run(
         ))
     all_analyses = dict(zip(after_exact, results))
 
-    # Pass 2: perceptual (phash) deduplication — keeps sharpest copy
-    after_phash, phash_dupes = _find_perceptual_duplicates(after_exact, all_analyses)
-    if phash_dupes:
-        print(f"  {len(phash_dupes)} perceptual duplicate(s) removed")
+    if exact_dupes:
+        print(f"  {len(exact_dupes)} exact duplicate(s) will be rejected")
 
-    dupes = exact_dupes + phash_dupes
-    if dupes:
-        print(f"  {len(dupes)} total duplicate(s) will be rejected")
-
-    face_counts = {p: all_analyses[p]["face_count"] for p in after_phash}
-    groups = group_by_time(after_phash, gap_seconds=gap, use_clip=True, face_counts=face_counts)
-    skipped = len(after_phash) - sum(len(g) for g in groups)
+    face_counts = {p: all_analyses[p]["face_count"] for p in after_exact}
+    groups = group_by_time(after_exact, gap_seconds=gap, use_clip=True, face_counts=face_counts)
+    skipped = len(after_exact) - sum(len(g) for g in groups)
     if skipped:
         print(f"Warning: {skipped} image(s) skipped — no EXIF timestamp")
     gap_info = f"{gap}s" if gap is not None else "auto"
@@ -184,16 +178,28 @@ def run(
             row.update({"blur_score": "", "has_face": "", "eyes_closed": "", "smile_score": "", "face_count": ""})
         log_rows.append(row)
 
-    for p, reason in [(p, "exact duplicate") for p in exact_dupes] + [(p, "perceptual duplicate") for p in phash_dupes]:
+    for p in exact_dupes:
         if not dry_run:
             transfer(str(p), str(rejected_dir / p.name))
-        print(f"  [skip] {p.name} ({reason})")
+        print(f"  [skip] {p.name} (exact duplicate)")
         rejected += 1
-        _log("", p, "skip", reason, None)
+        _log("", p, "skip", "exact duplicate", None)
 
     for i, group in enumerate(groups, 1):
-        print(f"Session {i} ({len(group)} photo{'s' if len(group) > 1 else ''}):")
+        # Perceptual dedupe within each session — keeps sharpest copy
         analyses = {p: all_analyses[p] for p in group}
+        session_unique, phash_dupes = _find_perceptual_duplicates(group, analyses, threshold=3)
+
+        for p in phash_dupes:
+            if not dry_run:
+                transfer(str(p), str(rejected_dir / p.name))
+            print(f"  [skip] {p.name} (perceptual duplicate)")
+            rejected += 1
+            _log(i, p, "skip", "perceptual duplicate", analyses[p])
+
+        group = session_unique
+        analyses = {p: all_analyses[p] for p in group}
+        print(f"Session {i} ({len(group)} photo{'s' if len(group) > 1 else ''}):")
 
         if len(group) == 1:
             p = group[0]
