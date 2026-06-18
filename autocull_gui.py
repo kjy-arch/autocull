@@ -71,7 +71,7 @@ class AnalysisWorker(QThread):
 
 
 class ThumbnailLoader(QThread):
-    ready = pyqtSignal(str, QImage)
+    ready = pyqtSignal(str, str, QImage)  # kind, path_str, image
     done = pyqtSignal()
 
     def __init__(self, kept: list[Path], rejected: list[Path]):
@@ -80,10 +80,18 @@ class ThumbnailLoader(QThread):
         self._rejected = rejected
 
     def run(self):
-        for path in self._kept:
-            self.ready.emit("kept", self._load(path))
-        for path in self._rejected:
-            self.ready.emit("rej", self._load(path))
+        import os
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        items = [("kept", p) for p in self._kept] + [("rej", p) for p in self._rejected]
+        workers = min(8, os.cpu_count() or 1)
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to = {executor.submit(self._load, p): (kind, p) for kind, p in items}
+            for future in as_completed(future_to):
+                kind, path = future_to[future]
+                self.ready.emit(kind, str(path), future.result())
+
         self.done.emit()
 
     def _load(self, path: Path) -> QImage:
@@ -833,18 +841,13 @@ class MainWindow(QMainWindow):
         self._loader.done.connect(self._on_load_done)
         self._loader.start()
 
-    def _on_thumb_ready(self, kind: str, qimg: QImage):
+    def _on_thumb_ready(self, kind: str, path_str: str, qimg: QImage):
+        path = Path(path_str)
         pixmap = QPixmap.fromImage(qimg)
         if kind == "kept":
-            idx = self.kept_grid._count
-            if idx < len(self._kept_paths):
-                path = self._kept_paths[idx]
-                self.kept_grid.add_card(path, pixmap, self._meta.get(path.name))
+            self.kept_grid.add_card(path, pixmap, self._meta.get(path.name))
         else:
-            idx = self.rej_grid._count
-            if idx < len(self._rej_paths):
-                path = self._rej_paths[idx]
-                self.rej_grid.add_card(path, pixmap, self._meta.get(path.name))
+            self.rej_grid.add_card(path, pixmap, self._meta.get(path.name))
 
     def _on_load_done(self):
         self.kept_label.setText(
@@ -902,7 +905,7 @@ class MainWindow(QMainWindow):
         self.kept_grid.clear_all()
         self.kept_label.setText(f"보관 ({len(self._kept_paths)}) — 로딩 중...")
         loader = ThumbnailLoader(self._kept_paths, [])
-        loader.ready.connect(self._on_thumb_ready)
+        loader.ready.connect(self._on_thumb_ready)  # signature: (kind, path_str, qimg)
         loader.done.connect(lambda: self.kept_label.setText(
             f"보관 ({len(self._kept_paths)})  💡 더블클릭=미리보기 / 드래그=이동"
         ))
@@ -947,18 +950,13 @@ class MainWindow(QMainWindow):
         self._reclass_loader.done.connect(self._on_reclass_load_done)
         self._reclass_loader.start()
 
-    def _on_reclass_thumb_ready(self, kind: str, qimg: QImage):
+    def _on_reclass_thumb_ready(self, kind: str, path_str: str, qimg: QImage):
+        path = Path(path_str)
         pixmap = QPixmap.fromImage(qimg)
         if kind == "kept":
-            idx = self.reclass_kept_grid._count
-            if idx < len(self._reclass_kept_paths):
-                path = self._reclass_kept_paths[idx]
-                self.reclass_kept_grid.add_card(path, pixmap, self._meta.get(path.name))
+            self.reclass_kept_grid.add_card(path, pixmap, self._meta.get(path.name))
         else:
-            idx = self.reclass_rej_grid._count
-            if idx < len(self._reclass_rej_paths):
-                path = self._reclass_rej_paths[idx]
-                self.reclass_rej_grid.add_card(path, pixmap, self._meta.get(path.name))
+            self.reclass_rej_grid.add_card(path, pixmap, self._meta.get(path.name))
 
     def _on_reclass_load_done(self):
         self.reclass_kept_label.setText(
