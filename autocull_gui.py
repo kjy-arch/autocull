@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QScrollArea, QGridLayout, QFrame, QGroupBox, QSplitter, QMessageBox,
     QDialog,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPoint, QMimeData, QSettings
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPoint, QMimeData, QSettings, QTimer
 from PyQt6.QtGui import QPixmap, QFont, QImage, QColor, QDrag
 
 THUMB_SIZE = 200
@@ -541,7 +541,8 @@ class MainWindow(QMainWindow):
         rl = QVBoxLayout(results_w)
         rl.setContentsMargins(0, 4, 0, 0)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._classify_splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter = self._classify_splitter
 
         kept_w = QWidget()
         kl = QVBoxLayout(kept_w)
@@ -630,6 +631,7 @@ class MainWindow(QMainWindow):
 
         row = QHBoxLayout()
         self.reclass_load_btn = QPushButton("사진 불러오기")
+
         self.reclass_load_btn.setFixedHeight(42)
         f = self.reclass_load_btn.font()
         f.setPointSize(11)
@@ -644,7 +646,8 @@ class MainWindow(QMainWindow):
         row.addWidget(self.reclass_progress, 2)
         layout.addLayout(row)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._reclass_splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter = self._reclass_splitter
 
         rk_w = QWidget()
         rkl = QVBoxLayout(rk_w)
@@ -682,6 +685,16 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(splitter, 1)
         return w
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, self._equalize_splitters)
+
+    def _equalize_splitters(self):
+        for sp in (self._classify_splitter, self._reclass_splitter):
+            w = sp.width()
+            if w > 0:
+                sp.setSizes([w // 2, w // 2])
 
     # ── Settings persistence  (기능 6) ─────────────────────────────────────
 
