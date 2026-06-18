@@ -8,6 +8,7 @@ from tqdm import tqdm
 
 EXIF_DATETIME_ORIGINAL = 36867
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".3gp", ".wmv", ".mts", ".ts"}
 _EXIF_IFD = 0x8769
 _FALLBACK_GAP = 120.0  # 2-minute fallback when distribution has no clear boundary
 _SCENE_SIM_THRESHOLD = 0.75  # cosine similarity below this → new session
@@ -64,13 +65,25 @@ def get_timestamp(path: Path) -> datetime | None:
     return None
 
 
-def find_images(folder: Path, recursive: bool = False, exclude: Path | None = None) -> list[Path]:
+def find_images(folder: Path, recursive: bool = False, exclude: Path | list[Path] | None = None) -> list[Path]:
     paths = folder.rglob("*") if recursive else folder.iterdir()
+    excludes = [exclude] if isinstance(exclude, Path) else (exclude or [])
     return [
         p for p in paths
         if p.is_file()
         and p.suffix.lower() in IMAGE_EXTENSIONS
-        and (exclude is None or not p.is_relative_to(exclude))
+        and not any(p.is_relative_to(e) for e in excludes)
+    ]
+
+
+def find_videos(folder: Path, recursive: bool = False, exclude: Path | list[Path] | None = None) -> list[Path]:
+    paths = folder.rglob("*") if recursive else folder.iterdir()
+    excludes = [exclude] if isinstance(exclude, Path) else (exclude or [])
+    return [
+        p for p in paths
+        if p.is_file()
+        and p.suffix.lower() in VIDEO_EXTENSIONS
+        and not any(p.is_relative_to(e) for e in excludes)
     ]
 
 

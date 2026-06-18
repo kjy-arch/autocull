@@ -8,7 +8,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from grouper import find_images, group_by_time, get_timestamp
+from grouper import find_images, find_videos, group_by_time, get_timestamp
 from analyzer import analyze
 from location import get_gps, place_name
 
@@ -121,7 +121,12 @@ def run(
         print(f"Error: input directory not found: {input_dir}")
         return
 
-    images = find_images(input_dir, recursive=recursive, exclude=output_dir)
+    best_dir = output_dir / "best"
+    rejected_dir = output_dir / "rejected"
+
+    # Exclude best/ and rejected/ subdirs so re-runs don't reprocess already-sorted files
+    _excludes = [best_dir, rejected_dir] if output_dir.is_relative_to(input_dir) else None
+    images = find_images(input_dir, recursive=recursive, exclude=_excludes)
     if not images:
         print("No images found.")
         return
@@ -157,10 +162,9 @@ def run(
         print("[DRY-RUN] No files will be moved or copied.\n")
     else:
         print()
-        best_dir = output_dir / "best"
-        rejected_dir = output_dir / "rejected"
-        best_dir.mkdir(parents=True, exist_ok=True)
-        rejected_dir.mkdir(parents=True, exist_ok=True)
+        if mode in ("copy", "move"):
+            best_dir.mkdir(parents=True, exist_ok=True)
+            rejected_dir.mkdir(parents=True, exist_ok=True)
 
     transfer = shutil.copy2 if mode == "copy" else shutil.move
 
@@ -180,7 +184,10 @@ def run(
 
     for p in exact_dupes:
         if not dry_run:
-            transfer(str(p), str(rejected_dir / p.name))
+            if mode == "remove":
+                os.remove(p)
+            else:
+                transfer(str(p), str(rejected_dir / p.name))
         print(f"  [skip] {p.name} (exact duplicate)")
         rejected += 1
         _log("", p, "skip", "exact duplicate", None)
@@ -192,7 +199,10 @@ def run(
 
         for p in phash_dupes:
             if not dry_run:
-                transfer(str(p), str(rejected_dir / p.name))
+                if mode == "remove":
+                    os.remove(p)
+                else:
+                    transfer(str(p), str(rejected_dir / p.name))
             print(f"  [skip] {p.name} (perceptual duplicate)")
             rejected += 1
             _log(i, p, "skip", "perceptual duplicate", analyses[p])
@@ -204,7 +214,7 @@ def run(
         if len(group) == 1:
             p = group[0]
             dest_name = _best_filename(p)
-            if not dry_run:
+            if not dry_run and mode != "remove":
                 dest = _unique_dest(best_dir, dest_name)
                 transfer(str(p), str(dest))
                 dest_name = dest.name
@@ -219,7 +229,7 @@ def run(
             a = analyses[p]
             if p == best:
                 dest_name = _best_filename(p)
-                if not dry_run:
+                if not dry_run and mode != "remove":
                     dest = _unique_dest(best_dir, dest_name)
                     transfer(str(p), str(dest))
                     dest_name = dest.name
@@ -234,10 +244,28 @@ def run(
                 else:
                     reason = "not best"
                 if not dry_run:
-                    transfer(str(p), str(rejected_dir / p.name))
+                    if mode == "remove":
+                        os.remove(p)
+                    else:
+                        transfer(str(p), str(rejected_dir / p.name))
                 print(f"  [skip] {p.name} ({reason})")
                 rejected += 1
                 _log(i, p, "skip", reason, a)
+
+    # Move all video files to best/ (no culling for videos)
+    videos = find_videos(input_dir, recursive=recursive, exclude=_excludes)
+    if videos:
+        print(f"\nFound {len(videos)} video(s) — moving to best/")
+        for v in videos:
+            dest_name = v.name
+            if not dry_run:
+                best_dir.mkdir(parents=True, exist_ok=True)
+                dest = _unique_dest(best_dir, v.name)
+                transfer(str(v), str(dest))
+                dest_name = dest.name
+            print(f"  [keep] {v.name} -> {dest_name} (video)")
+            kept += 1
+            _log("video", v, "keep", "video", None, dest_name)
 
     suffix = " [DRY-RUN]" if dry_run else ""
     print(f"\nDone{suffix} - kept: {kept}, rejected: {rejected}")
