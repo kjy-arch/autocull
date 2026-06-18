@@ -10,7 +10,7 @@ EXIF_DATETIME_ORIGINAL = 36867
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 _EXIF_IFD = 0x8769
 _FALLBACK_GAP = 120.0  # 2-minute fallback when distribution has no clear boundary
-_SCENE_SIM_THRESHOLD = 0.82  # cosine similarity below this → new session
+_SCENE_SIM_THRESHOLD = 0.75  # cosine similarity below this → new session
 
 _clip_model = None
 _clip_preprocess = None
@@ -64,8 +64,14 @@ def get_timestamp(path: Path) -> datetime | None:
     return None
 
 
-def find_images(folder: Path) -> list[Path]:
-    return [p for p in folder.iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS]
+def find_images(folder: Path, recursive: bool = False, exclude: Path | None = None) -> list[Path]:
+    paths = folder.rglob("*") if recursive else folder.iterdir()
+    return [
+        p for p in paths
+        if p.is_file()
+        and p.suffix.lower() in IMAGE_EXTENSIONS
+        and (exclude is None or not p.is_relative_to(exclude))
+    ]
 
 
 def _find_session_threshold(gaps: list[float]) -> float:

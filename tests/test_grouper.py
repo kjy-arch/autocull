@@ -79,6 +79,27 @@ class TestFindImages:
         (tmp_path / "c.mp4").write_bytes(b"")
         assert len(find_images(tmp_path)) == 1
 
+    def test_recursive_finds_files_in_subdirectory(self, tmp_path):
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        (tmp_path / "a.jpg").write_bytes(b"")
+        (sub / "b.jpg").write_bytes(b"")
+        assert len(find_images(tmp_path, recursive=True)) == 2
+
+    def test_not_recursive_ignores_subdirectory(self, tmp_path):
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        (tmp_path / "a.jpg").write_bytes(b"")
+        (sub / "b.jpg").write_bytes(b"")
+        assert len(find_images(tmp_path, recursive=False)) == 1
+
+    def test_exclude_skips_matching_subtree(self, tmp_path):
+        out = tmp_path / "output"
+        out.mkdir()
+        (tmp_path / "a.jpg").write_bytes(b"")
+        (out / "b.jpg").write_bytes(b"")
+        assert len(find_images(tmp_path, recursive=True, exclude=out)) == 1
+
 
 class TestFindSessionThreshold:
     def test_clear_boundary_returns_midpoint(self):

@@ -5,7 +5,7 @@ import piexif
 import pytest
 from PIL import Image
 
-from autocull import _best_filename, _unique_dest, pick_best, run
+from autocull import _best_filename, _unique_dest, _find_duplicates, pick_best, run
 
 
 def _make_jpeg(path: Path, dt_str: str | None = None, sharp: bool = True) -> Path:
@@ -173,3 +173,79 @@ class TestRun:
         with patch("autocull.get_gps", return_value=None):
             run(input_dir, tmp_path / "out", gap=15, blur_threshold=0.0, mode="copy")
         assert "Warning" in capsys.readouterr().out
+
+    def test_dry_run_creates_no_files(self, tmp_path, capsys):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _make_jpeg(input_dir / "a.jpg", "2024:01:01 10:00:00")
+        with patch("autocull.get_gps", return_value=None):
+            run(input_dir, tmp_path / "out", gap=15, blur_threshold=0.0, mode="copy", dry_run=True)
+        assert not (tmp_path / "out").exists()
+
+    def test_dry_run_prints_dry_run_marker(self, tmp_path, capsys):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _make_jpeg(input_dir / "a.jpg", "2024:01:01 10:00:00")
+        with patch("autocull.get_gps", return_value=None):
+            run(input_dir, tmp_path / "out", gap=15, blur_threshold=0.0, mode="copy", dry_run=True)
+        assert "DRY-RUN" in capsys.readouterr().out
+
+    def test_log_creates_csv(self, tmp_path):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _make_jpeg(input_dir / "a.jpg", "2024:01:01 10:00:00")
+        with patch("autocull.get_gps", return_value=None):
+            run(input_dir, tmp_path / "out", gap=15, blur_threshold=0.0, mode="copy", log=True)
+        assert (tmp_path / "out" / "autocull_log.csv").exists()
+
+    def test_log_has_correct_columns(self, tmp_path):
+        import csv as _csv
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _make_jpeg(input_dir / "a.jpg", "2024:01:01 10:00:00")
+        with patch("autocull.get_gps", return_value=None):
+            run(input_dir, tmp_path / "out", gap=15, blur_threshold=0.0, mode="copy", log=True)
+        with open(tmp_path / "out" / "autocull_log.csv", encoding="utf-8") as f:
+            reader = _csv.DictReader(f)
+            cols = reader.fieldnames
+        assert "filename" in cols and "result" in cols and "reason" in cols
+
+    def test_recursive_finds_images_in_subdirectory(self, tmp_path):
+        input_dir = tmp_path / "in"
+        sub = input_dir / "sub"
+        sub.mkdir(parents=True)
+        _make_jpeg(input_dir / "a.jpg", "2024:01:01 10:00:00")
+        _make_jpeg(sub / "b.jpg", "2024:01:01 10:00:05")
+        with patch("autocull.get_gps", return_value=None):
+            run(input_dir, tmp_path / "out", gap=15, blur_threshold=0.0, mode="copy", recursive=True)
+        best_files = list((tmp_path / "out" / "best").iterdir())
+        assert len(best_files) == 1
+
+
+class TestFindDuplicates:
+    def test_identical_files_detected(self, tmp_path):
+        p1 = tmp_path / "a.jpg"
+        p2 = tmp_path / "b.jpg"
+        p1.write_bytes(b"same content")
+        p2.write_bytes(b"same content")
+        unique, dupes = _find_duplicates([p1, p2])
+        assert len(unique) == 1
+        assert len(dupes) == 1
+
+    def test_different_files_all_unique(self, tmp_path):
+        p1 = tmp_path / "a.jpg"
+        p2 = tmp_path / "b.jpg"
+        p1.write_bytes(b"content a")
+        p2.write_bytes(b"content b")
+        unique, dupes = _find_duplicates([p1, p2])
+        assert len(unique) == 2
+        assert len(dupes) == 0
+
+    def test_first_occurrence_kept(self, tmp_path):
+        p1 = tmp_path / "a.jpg"
+        p2 = tmp_path / "b.jpg"
+        p1.write_bytes(b"same")
+        p2.write_bytes(b"same")
+        unique, dupes = _find_duplicates([p1, p2])
+        assert unique[0] == p1
+        assert dupes[0] == p2
