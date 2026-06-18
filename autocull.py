@@ -57,7 +57,7 @@ def _file_hash(path: Path) -> str:
     return hashlib.md5(path.read_bytes()).hexdigest()
 
 
-def _find_duplicates(images: list[Path]) -> tuple[list[Path], list[Path]]:
+def _find_exact_duplicates(images: list[Path]) -> tuple[list[Path], list[Path]]:
     seen: dict[str, Path] = {}
     unique: list[Path] = []
     dupes: list[Path] = []
@@ -72,6 +72,38 @@ def _find_duplicates(images: list[Path]) -> tuple[list[Path], list[Path]]:
         else:
             seen[h] = p
             unique.append(p)
+    return unique, dupes
+
+
+def _find_perceptual_duplicates(
+    images: list[Path],
+    analyses: dict,
+    threshold: int = 8,
+) -> tuple[list[Path], list[Path]]:
+    import imagehash
+    from PIL import Image
+
+    # Sort by blur_score descending so the sharpest copy is always kept
+    sorted_images = sorted(images, key=lambda p: analyses[p]["blur_score"], reverse=True)
+
+    kept_hashes: list = []
+    unique: list[Path] = []
+    dupes: list[Path] = []
+
+    for p in sorted_images:
+        try:
+            img = Image.open(p)
+            img.thumbnail((512, 512))
+            h = imagehash.phash(img)
+        except Exception:
+            unique.append(p)
+            continue
+        if any(abs(h - kh) <= threshold for kh in kept_hashes):
+            dupes.append(p)
+        else:
+            kept_hashes.append(h)
+            unique.append(p)
+
     return unique, dupes
 
 
@@ -96,22 +128,32 @@ def run(
 
     print(f"Found {len(images)} images")
 
-    unique, dupes = _find_duplicates(images)
-    if dupes:
-        print(f"Found {len(dupes)} duplicate(s) — will be rejected")
+    # Pass 1: exact (MD5) deduplication — fast, no analysis needed
+    after_exact, exact_dupes = _find_exact_duplicates(images)
+    if exact_dupes:
+        print(f"  {len(exact_dupes)} exact duplicate(s) removed")
 
     workers = min(4, os.cpu_count() or 1)
     with ThreadPoolExecutor(max_workers=workers) as executor:
         results = list(tqdm(
-            executor.map(analyze, unique),
-            total=len(unique),
+            executor.map(analyze, after_exact),
+            total=len(after_exact),
             desc="Analyzing",
         ))
-    all_analyses = dict(zip(unique, results))
-    face_counts = {p: all_analyses[p]["face_count"] for p in unique}
+    all_analyses = dict(zip(after_exact, results))
 
-    groups = group_by_time(unique, gap_seconds=gap, use_clip=True, face_counts=face_counts)
-    skipped = len(unique) - sum(len(g) for g in groups)
+    # Pass 2: perceptual (phash) deduplication — keeps sharpest copy
+    after_phash, phash_dupes = _find_perceptual_duplicates(after_exact, all_analyses)
+    if phash_dupes:
+        print(f"  {len(phash_dupes)} perceptual duplicate(s) removed")
+
+    dupes = exact_dupes + phash_dupes
+    if dupes:
+        print(f"  {len(dupes)} total duplicate(s) will be rejected")
+
+    face_counts = {p: all_analyses[p]["face_count"] for p in after_phash}
+    groups = group_by_time(after_phash, gap_seconds=gap, use_clip=True, face_counts=face_counts)
+    skipped = len(after_phash) - sum(len(g) for g in groups)
     if skipped:
         print(f"Warning: {skipped} image(s) skipped — no EXIF timestamp")
     gap_info = f"{gap}s" if gap is not None else "auto"
@@ -142,12 +184,12 @@ def run(
             row.update({"blur_score": "", "has_face": "", "eyes_closed": "", "smile_score": "", "face_count": ""})
         log_rows.append(row)
 
-    for p in dupes:
+    for p, reason in [(p, "exact duplicate") for p in exact_dupes] + [(p, "perceptual duplicate") for p in phash_dupes]:
         if not dry_run:
             transfer(str(p), str(rejected_dir / p.name))
-        print(f"  [skip] {p.name} (duplicate)")
+        print(f"  [skip] {p.name} ({reason})")
         rejected += 1
-        _log("", p, "skip", "duplicate", None)
+        _log("", p, "skip", reason, None)
 
     for i, group in enumerate(groups, 1):
         print(f"Session {i} ({len(group)} photo{'s' if len(group) > 1 else ''}):")

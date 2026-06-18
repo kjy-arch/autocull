@@ -5,3 +5,4 @@ geopy>=2.0
 open-clip-torch>=2.20
 torch>=2.0
 tqdm>=4.65
+imagehash>=4.3

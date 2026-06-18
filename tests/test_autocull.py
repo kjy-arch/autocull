@@ -5,7 +5,7 @@ import piexif
 import pytest
 from PIL import Image
 
-from autocull import _best_filename, _unique_dest, _find_duplicates, pick_best, run
+from autocull import _best_filename, _unique_dest, _find_exact_duplicates, _find_perceptual_duplicates, pick_best, run
 
 
 def _make_jpeg(path: Path, dt_str: str | None = None, sharp: bool = True) -> Path:
@@ -222,13 +222,13 @@ class TestRun:
         assert len(best_files) == 1
 
 
-class TestFindDuplicates:
+class TestExactDuplicates:
     def test_identical_files_detected(self, tmp_path):
         p1 = tmp_path / "a.jpg"
         p2 = tmp_path / "b.jpg"
         p1.write_bytes(b"same content")
         p2.write_bytes(b"same content")
-        unique, dupes = _find_duplicates([p1, p2])
+        unique, dupes = _find_exact_duplicates([p1, p2])
         assert len(unique) == 1
         assert len(dupes) == 1
 
@@ -237,7 +237,7 @@ class TestFindDuplicates:
         p2 = tmp_path / "b.jpg"
         p1.write_bytes(b"content a")
         p2.write_bytes(b"content b")
-        unique, dupes = _find_duplicates([p1, p2])
+        unique, dupes = _find_exact_duplicates([p1, p2])
         assert len(unique) == 2
         assert len(dupes) == 0
 
@@ -246,6 +246,39 @@ class TestFindDuplicates:
         p2 = tmp_path / "b.jpg"
         p1.write_bytes(b"same")
         p2.write_bytes(b"same")
-        unique, dupes = _find_duplicates([p1, p2])
+        unique, dupes = _find_exact_duplicates([p1, p2])
         assert unique[0] == p1
         assert dupes[0] == p2
+
+
+class TestPerceptualDuplicates:
+    def _make_analyses(self, paths, blur_scores):
+        return {
+            p: {"blur_score": s, "has_face": False, "eyes_closed": False, "smile_score": 0.0, "face_count": 0}
+            for p, s in zip(paths, blur_scores)
+        }
+
+    def test_identical_images_are_perceptual_dupes(self, tmp_path):
+        p1 = _make_jpeg(tmp_path / "a.jpg", "2024:01:01 10:00:00", sharp=True)
+        p2 = _make_jpeg(tmp_path / "b.jpg", "2024:01:01 10:00:01", sharp=True)
+        analyses = self._make_analyses([p1, p2], [200.0, 200.0])
+        unique, dupes = _find_perceptual_duplicates([p1, p2], analyses)
+        assert len(unique) == 1
+        assert len(dupes) == 1
+
+    def test_sharpest_copy_is_kept(self, tmp_path):
+        p1 = _make_jpeg(tmp_path / "a.jpg", "2024:01:01 10:00:00", sharp=True)
+        p2 = _make_jpeg(tmp_path / "b.jpg", "2024:01:01 10:00:01", sharp=True)
+        # p1 has lower blur_score — p2 should be kept
+        analyses = self._make_analyses([p1, p2], [50.0, 200.0])
+        unique, dupes = _find_perceptual_duplicates([p1, p2], analyses)
+        assert unique[0] == p2
+        assert dupes[0] == p1
+
+    def test_visually_different_images_not_flagged(self, tmp_path):
+        p1 = _make_jpeg(tmp_path / "a.jpg", "2024:01:01 10:00:00", sharp=True)
+        p2 = _make_jpeg(tmp_path / "b.jpg", "2024:01:01 10:00:01", sharp=False)
+        analyses = self._make_analyses([p1, p2], [200.0, 10.0])
+        unique, dupes = _find_perceptual_duplicates([p1, p2], analyses)
+        assert len(unique) == 2
+        assert len(dupes) == 0
