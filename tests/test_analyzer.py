@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import cv2
 import numpy as np
@@ -49,3 +50,29 @@ class TestAnalyze:
         assert result["has_face"] is False
         assert result["eyes_closed"] is False
         assert result["smile_score"] == 0.0
+
+    def test_haar_fallback_when_mediapipe_returns_no_faces(self, tmp_path):
+        path = _checkerboard(tmp_path / "img.jpg")
+        fake_result = MagicMock()
+        fake_result.face_landmarks = []
+        fake_result.face_blendshapes = []
+        with patch("analyzer._get_landmarker") as mock_lm, \
+             patch("analyzer._haar_face_count", return_value=2) as mock_haar:
+            mock_lm.return_value.detect.return_value = fake_result
+            result = analyze(path)
+        mock_haar.assert_called_once()
+        assert result["has_face"] is True
+        assert result["face_count"] == 2
+        assert result["eyes_closed"] is False
+        assert result["smile_score"] == 0.0
+
+    def test_haar_fallback_not_triggered_when_haar_also_finds_nothing(self, tmp_path):
+        path = _checkerboard(tmp_path / "img.jpg")
+        fake_result = MagicMock()
+        fake_result.face_landmarks = []
+        with patch("analyzer._get_landmarker") as mock_lm, \
+             patch("analyzer._haar_face_count", return_value=0):
+            mock_lm.return_value.detect.return_value = fake_result
+            result = analyze(path)
+        assert result["has_face"] is False
+        assert result["face_count"] == 0

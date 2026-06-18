@@ -42,6 +42,17 @@ def _get_landmarker() -> _mp_vision.FaceLandmarker:
 _SMILE_NAMES = {"mouthSmileLeft", "mouthSmileRight"}
 SMILE_THRESHOLD = 0.3
 
+_face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+
+
+def _haar_face_count(img: np.ndarray) -> int:
+    h, w = img.shape[:2]
+    scale = min(1.0, 1280 / w)
+    small = cv2.resize(img, (int(w * scale), int(h * scale))) if scale < 1.0 else img
+    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+    faces = _face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4)
+    return len(faces)
+
 
 def _smile_score(blendshapes) -> float:
     """Average mouthSmile score across all detected faces."""
@@ -89,6 +100,9 @@ def analyze(path: Path) -> dict:
     result = _get_landmarker().detect(mp_image)
 
     if not result.face_landmarks:
+        haar_count = _haar_face_count(img)
+        if haar_count > 0:
+            return {"blur_score": blur_score, "has_face": True, "eyes_closed": False, "smile_score": 0.0, "face_count": haar_count}
         return {"blur_score": blur_score, "has_face": False, "eyes_closed": False, "smile_score": 0.0, "face_count": 0}
 
     eyes_closed = any(
