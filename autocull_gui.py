@@ -138,8 +138,6 @@ class ThumbnailCard(QFrame):
         name_label.setStyleSheet("font-size: 9px; color: #555;")
         layout.addWidget(name_label)
 
-    # ── Drag initiation ────────────────────────────────────────────────────
-
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start = event.pos()
@@ -170,13 +168,13 @@ class ThumbnailCard(QFrame):
 # ---------------------------------------------------------------------------
 
 class ThumbnailGrid(QScrollArea):
-    drop_received = pyqtSignal(str)  # path_str dropped onto this grid
+    drop_received = pyqtSignal(str)
 
     def __init__(self, kind: str, parent=None):
         super().__init__(parent)
         self.kind = kind  # "kept" or "rej"
-        self._cards: dict[str, ThumbnailCard] = {}   # path_str → card
-        self._order: list[str] = []                   # ordered path_strs
+        self._cards: dict[str, ThumbnailCard] = {}
+        self._order: list[str] = []
 
         self.setWidgetResizable(True)
         self.setAcceptDrops(True)
@@ -229,8 +227,6 @@ class ThumbnailGrid(QScrollArea):
         self._cards.clear()
         self._order.clear()
 
-    # ── Drop events ────────────────────────────────────────────────────────
-
     def dragEnterEvent(self, event):
         if event.mimeData().hasText():
             color = "#4CAF50" if self.kind == "kept" else "#EF5350"
@@ -262,21 +258,37 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1100, 800)
         self._worker: AnalysisWorker | None = None
         self._loader: ThumbnailLoader | None = None
+        self._reclass_loader: ThumbnailLoader | None = None
         self._output_dir: Path | None = None
         self._dry_run = False
         self._mode = "copy"
         self._kept_paths: list[Path] = []
         self._rej_paths: list[Path] = []
+        self._reclass_kept_paths: list[Path] = []
+        self._reclass_rej_paths: list[Path] = []
         self._build_ui()
+
+    # ── UI construction ────────────────────────────────────────────────────
 
     def _build_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
-        root.setSpacing(8)
-        root.setContentsMargins(10, 10, 10, 10)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        # ── Settings ──────────────────────────────────────────────────────
+        self.main_tabs = QTabWidget()
+        self.main_tabs.addTab(self._build_classify_tab(), "분류")
+        self.main_tabs.addTab(self._build_reclass_tab(), "재분류")
+        root.addWidget(self.main_tabs)
+
+    def _build_classify_tab(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setSpacing(8)
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        # Settings
         settings = QGroupBox("설정")
         sl = QVBoxLayout(settings)
 
@@ -341,9 +353,9 @@ class MainWindow(QMainWindow):
         row.addStretch()
         sl.addLayout(row)
 
-        root.addWidget(settings)
+        layout.addWidget(settings)
 
-        # ── Run button + progress ──────────────────────────────────────────
+        # Run button + progress
         row = QHBoxLayout()
         self.run_btn = QPushButton("분석 시작")
         self.run_btn.setFixedHeight(42)
@@ -358,20 +370,18 @@ class MainWindow(QMainWindow):
         self.progress_bar.setFixedHeight(42)
         self.progress_bar.setVisible(False)
         row.addWidget(self.progress_bar, 2)
-        root.addLayout(row)
+        layout.addLayout(row)
 
-        # ── Tabs ───────────────────────────────────────────────────────────
-        self.tabs = QTabWidget()
+        # Sub-tabs: 로그 / 결과
+        self.classify_tabs = QTabWidget()
 
-        # Log tab
         self.log_edit = QTextEdit()
         self.log_edit.setReadOnly(True)
         self.log_edit.setFont(QFont("Consolas", 9))
-        self.tabs.addTab(self.log_edit, "로그")
+        self.classify_tabs.addTab(self.log_edit, "로그")
 
-        # Results tab
-        results_widget = QWidget()
-        rl = QVBoxLayout(results_widget)
+        results_w = QWidget()
+        rl = QVBoxLayout(results_w)
         rl.setContentsMargins(0, 4, 0, 0)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -405,11 +415,101 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 1)
 
         rl.addWidget(splitter, 1)
-        self.tabs.addTab(results_widget, "결과")
+        self.classify_tabs.addTab(results_w, "결과")
 
-        root.addWidget(self.tabs, 1)
+        layout.addWidget(self.classify_tabs, 1)
+        return w
 
-    # ── Folder picker ──────────────────────────────────────────────────────
+    def _build_reclass_tab(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setSpacing(8)
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        # Folder pickers
+        folders = QGroupBox("폴더 선택")
+        fl = QVBoxLayout(folders)
+
+        row = QHBoxLayout()
+        lbl = QLabel("보관 폴더:")
+        lbl.setFixedWidth(80)
+        row.addWidget(lbl)
+        self.reclass_best_edit = QLineEdit()
+        self.reclass_best_edit.setPlaceholderText("best 폴더 경로")
+        row.addWidget(self.reclass_best_edit)
+        btn = QPushButton("선택")
+        btn.setFixedWidth(60)
+        btn.clicked.connect(lambda: self._pick_folder(self.reclass_best_edit))
+        row.addWidget(btn)
+        fl.addLayout(row)
+
+        row = QHBoxLayout()
+        lbl = QLabel("제외 폴더:")
+        lbl.setFixedWidth(80)
+        row.addWidget(lbl)
+        self.reclass_rej_edit = QLineEdit()
+        self.reclass_rej_edit.setPlaceholderText("rejected 폴더 경로")
+        row.addWidget(self.reclass_rej_edit)
+        btn = QPushButton("선택")
+        btn.setFixedWidth(60)
+        btn.clicked.connect(lambda: self._pick_folder(self.reclass_rej_edit))
+        row.addWidget(btn)
+        fl.addLayout(row)
+
+        layout.addWidget(folders)
+
+        # Load button + progress
+        row = QHBoxLayout()
+        self.reclass_load_btn = QPushButton("사진 불러오기")
+        self.reclass_load_btn.setFixedHeight(42)
+        f = self.reclass_load_btn.font()
+        f.setPointSize(11)
+        f.setBold(True)
+        self.reclass_load_btn.setFont(f)
+        self.reclass_load_btn.clicked.connect(self._on_reclass_load)
+        row.addWidget(self.reclass_load_btn, 1)
+        self.reclass_progress = QProgressBar()
+        self.reclass_progress.setRange(0, 0)
+        self.reclass_progress.setFixedHeight(42)
+        self.reclass_progress.setVisible(False)
+        row.addWidget(self.reclass_progress, 2)
+        layout.addLayout(row)
+
+        # Grids
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        rk_w = QWidget()
+        rkl = QVBoxLayout(rk_w)
+        rkl.setContentsMargins(0, 0, 4, 0)
+        self.reclass_kept_label = QLabel("보관 (0)  💡 드래그해서 ↔ 이동")
+        self.reclass_kept_label.setStyleSheet(
+            "font-weight: bold; color: #2e7d32; font-size: 13px; padding: 2px 4px;"
+        )
+        rkl.addWidget(self.reclass_kept_label)
+        self.reclass_kept_grid = ThumbnailGrid("kept")
+        self.reclass_kept_grid.drop_received.connect(self._on_reclass_kept_drop)
+        rkl.addWidget(self.reclass_kept_grid)
+        splitter.addWidget(rk_w)
+        splitter.setStretchFactor(0, 1)
+
+        rr_w = QWidget()
+        rrl = QVBoxLayout(rr_w)
+        rrl.setContentsMargins(4, 0, 0, 0)
+        self.reclass_rej_label = QLabel("제외 (0)")
+        self.reclass_rej_label.setStyleSheet(
+            "font-weight: bold; color: #c62828; font-size: 13px; padding: 2px 4px;"
+        )
+        rrl.addWidget(self.reclass_rej_label)
+        self.reclass_rej_grid = ThumbnailGrid("rej")
+        self.reclass_rej_grid.drop_received.connect(self._on_reclass_rej_drop)
+        rrl.addWidget(self.reclass_rej_grid)
+        splitter.addWidget(rr_w)
+        splitter.setStretchFactor(1, 1)
+
+        layout.addWidget(splitter, 1)
+        return w
+
+    # ── Folder pickers ─────────────────────────────────────────────────────
 
     def _pick_input_folder(self):
         path = QFileDialog.getExistingDirectory(self, "폴더 선택")
@@ -423,14 +523,14 @@ class MainWindow(QMainWindow):
         if path:
             edit.setText(path)
 
-    # ── Run ────────────────────────────────────────────────────────────────
+    # ── 분류 tab: run ──────────────────────────────────────────────────────
 
     def _on_run(self):
         input_dir = self.input_edit.text().strip()
         output_dir = self.output_edit.text().strip()
         if not input_dir:
             self.log_edit.append("[오류] 입력 폴더를 선택하세요.")
-            self.tabs.setCurrentIndex(0)
+            self.classify_tabs.setCurrentIndex(0)
             return
         if not output_dir:
             output_dir = input_dir
@@ -460,7 +560,7 @@ class MainWindow(QMainWindow):
         self.rej_grid.clear_all()
         self.kept_label.setText("보관 (0)")
         self.rej_label.setText("제외 (0)")
-        self.tabs.setCurrentIndex(0)
+        self.classify_tabs.setCurrentIndex(0)
 
         params = {
             "input_dir": Path(input_dir),
@@ -506,9 +606,13 @@ class MainWindow(QMainWindow):
             if p.suffix.lower() in IMAGE_EXTS
         )
 
+        # 재분류 탭 폴더 자동 채우기
+        self.reclass_best_edit.setText(str(best_dir))
+        self.reclass_rej_edit.setText(str(rej_dir))
+
         self.kept_label.setText(f"보관 ({len(self._kept_paths)}) — 로딩 중...  💡 드래그해서 ↔ 이동")
         self.rej_label.setText(f"제외 ({len(self._rej_paths)}) — 로딩 중...")
-        self.tabs.setCurrentIndex(1)
+        self.classify_tabs.setCurrentIndex(1)
 
         self._loader = ThumbnailLoader(self._kept_paths, self._rej_paths)
         self._loader.ready.connect(self._on_thumb_ready)
@@ -531,29 +635,104 @@ class MainWindow(QMainWindow):
         self.rej_label.setText(f"제외 ({len(self._rej_paths)})")
         self.run_btn.setEnabled(True)
 
-    # ── Drag-and-drop between grids ────────────────────────────────────────
-
     def _on_kept_grid_drop(self, path_str: str):
         if path_str in self.rej_grid._cards:
-            self._move_card(path_str, from_grid=self.rej_grid, to_grid=self.kept_grid)
+            self._move_card(path_str, from_grid=self.rej_grid, to_grid=self.kept_grid,
+                            best_dir=self._output_dir / "best",
+                            rej_dir=self._output_dir / "rejected",
+                            kept_label=self.kept_label, rej_label=self.rej_label)
 
     def _on_rej_grid_drop(self, path_str: str):
         if path_str in self.kept_grid._cards:
-            self._move_card(path_str, from_grid=self.kept_grid, to_grid=self.rej_grid)
+            self._move_card(path_str, from_grid=self.kept_grid, to_grid=self.rej_grid,
+                            best_dir=self._output_dir / "best",
+                            rej_dir=self._output_dir / "rejected",
+                            kept_label=self.kept_label, rej_label=self.rej_label)
 
-    def _move_card(self, path_str: str, from_grid: ThumbnailGrid, to_grid: ThumbnailGrid):
-        if self._output_dir is None:
+    # ── 재분류 tab ─────────────────────────────────────────────────────────
+
+    def _on_reclass_load(self):
+        best_dir = Path(self.reclass_best_edit.text().strip())
+        rej_dir = Path(self.reclass_rej_edit.text().strip())
+
+        if not best_dir.is_dir() or not rej_dir.is_dir():
+            QMessageBox.warning(self, "오류", "보관/제외 폴더를 모두 선택하세요.")
             return
 
+        self.reclass_kept_grid.clear_all()
+        self.reclass_rej_grid.clear_all()
+
+        self._reclass_kept_paths = sorted(
+            p for p in best_dir.iterdir() if p.suffix.lower() in IMAGE_EXTS
+        )
+        self._reclass_rej_paths = sorted(
+            p for p in rej_dir.iterdir() if p.suffix.lower() in IMAGE_EXTS
+        )
+
+        self.reclass_kept_label.setText(
+            f"보관 ({len(self._reclass_kept_paths)}) — 로딩 중...  💡 드래그해서 ↔ 이동"
+        )
+        self.reclass_rej_label.setText(f"제외 ({len(self._reclass_rej_paths)}) — 로딩 중...")
+
+        self.reclass_load_btn.setEnabled(False)
+        self.reclass_progress.setVisible(True)
+
+        self._reclass_loader = ThumbnailLoader(self._reclass_kept_paths, self._reclass_rej_paths)
+        self._reclass_loader.ready.connect(self._on_reclass_thumb_ready)
+        self._reclass_loader.done.connect(self._on_reclass_load_done)
+        self._reclass_loader.start()
+
+    def _on_reclass_thumb_ready(self, kind: str, qimg: QImage):
+        pixmap = QPixmap.fromImage(qimg)
+        if kind == "kept":
+            idx = self.reclass_kept_grid._count
+            if idx < len(self._reclass_kept_paths):
+                self.reclass_kept_grid.add_card(self._reclass_kept_paths[idx], pixmap)
+        else:
+            idx = self.reclass_rej_grid._count
+            if idx < len(self._reclass_rej_paths):
+                self.reclass_rej_grid.add_card(self._reclass_rej_paths[idx], pixmap)
+
+    def _on_reclass_load_done(self):
+        self.reclass_kept_label.setText(
+            f"보관 ({len(self._reclass_kept_paths)})  💡 드래그해서 ↔ 이동"
+        )
+        self.reclass_rej_label.setText(f"제외 ({len(self._reclass_rej_paths)})")
+        self.reclass_load_btn.setEnabled(True)
+        self.reclass_progress.setVisible(False)
+
+    def _on_reclass_kept_drop(self, path_str: str):
+        if path_str in self.reclass_rej_grid._cards:
+            best_dir = Path(self.reclass_best_edit.text().strip())
+            rej_dir = Path(self.reclass_rej_edit.text().strip())
+            self._move_card(path_str,
+                            from_grid=self.reclass_rej_grid, to_grid=self.reclass_kept_grid,
+                            best_dir=best_dir, rej_dir=rej_dir,
+                            kept_label=self.reclass_kept_label, rej_label=self.reclass_rej_label)
+
+    def _on_reclass_rej_drop(self, path_str: str):
+        if path_str in self.reclass_kept_grid._cards:
+            best_dir = Path(self.reclass_best_edit.text().strip())
+            rej_dir = Path(self.reclass_rej_edit.text().strip())
+            self._move_card(path_str,
+                            from_grid=self.reclass_kept_grid, to_grid=self.reclass_rej_grid,
+                            best_dir=best_dir, rej_dir=rej_dir,
+                            kept_label=self.reclass_kept_label, rej_label=self.reclass_rej_label)
+
+    # ── Shared move logic ──────────────────────────────────────────────────
+
+    def _move_card(self, path_str: str,
+                   from_grid: ThumbnailGrid, to_grid: ThumbnailGrid,
+                   best_dir: Path, rej_dir: Path,
+                   kept_label: QLabel, rej_label: QLabel):
         pixmap = from_grid.remove_card(path_str)
         if pixmap is None:
             return
 
         src = Path(path_str)
-        dest_dir = self._output_dir / ("best" if to_grid.kind == "kept" else "rejected")
+        dest_dir = best_dir if to_grid.kind == "kept" else rej_dir
         dest = dest_dir / src.name
 
-        # Avoid overwriting existing file
         if dest.exists() and dest != src:
             stem, suffix = src.stem, src.suffix
             i = 2
@@ -565,12 +744,14 @@ class MainWindow(QMainWindow):
             shutil.move(str(src), str(dest))
         except Exception as e:
             self.log_edit.append(f"[오류] 파일 이동 실패: {e}")
-            from_grid.add_card(src, pixmap)  # revert
+            from_grid.add_card(src, pixmap)
             return
 
         to_grid.add_card(dest, pixmap)
-        self.kept_label.setText(f"보관 ({len(self.kept_grid._cards)})")
-        self.rej_label.setText(f"제외 ({len(self.rej_grid._cards)})")
+        kg = to_grid if to_grid.kind == "kept" else from_grid
+        rg = to_grid if to_grid.kind == "rej" else from_grid
+        kept_label.setText(f"보관 ({len(kg._cards)})  💡 드래그해서 ↔ 이동")
+        rej_label.setText(f"제외 ({len(rg._cards)})")
 
 
 # ---------------------------------------------------------------------------
