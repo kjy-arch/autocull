@@ -1,3 +1,4 @@
+import threading
 import urllib.request
 import cv2
 import numpy as np
@@ -20,18 +21,22 @@ def _ensure_model() -> None:
         urllib.request.urlretrieve(_MODEL_URL, _MODEL_PATH)
 
 
-def _make_landmarker() -> _mp_vision.FaceLandmarker:
-    _ensure_model()
-    options = _mp_vision.FaceLandmarkerOptions(
-        base_options=_mp_python.BaseOptions(model_asset_path=str(_MODEL_PATH)),
-        num_faces=5,
-        min_face_detection_confidence=0.5,
-        output_face_blendshapes=True,
-    )
-    return _mp_vision.FaceLandmarker.create_from_options(options)
+_local = threading.local()
+
+# Download the model once at import time so worker threads don't race on it
+_ensure_model()
 
 
-_landmarker = _make_landmarker()
+def _get_landmarker() -> _mp_vision.FaceLandmarker:
+    if not hasattr(_local, "landmarker"):
+        options = _mp_vision.FaceLandmarkerOptions(
+            base_options=_mp_python.BaseOptions(model_asset_path=str(_MODEL_PATH)),
+            num_faces=5,
+            min_face_detection_confidence=0.5,
+            output_face_blendshapes=True,
+        )
+        _local.landmarker = _mp_vision.FaceLandmarker.create_from_options(options)
+    return _local.landmarker
 
 
 _SMILE_NAMES = {"mouthSmileLeft", "mouthSmileRight"}
@@ -81,7 +86,7 @@ def analyze(path: Path) -> dict:
     h, w = img.shape[:2]
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-    result = _landmarker.detect(mp_image)
+    result = _get_landmarker().detect(mp_image)
 
     if not result.face_landmarks:
         return {"blur_score": blur_score, "has_face": False, "eyes_closed": False, "smile_score": 0.0, "face_count": 0}

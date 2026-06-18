@@ -1,6 +1,10 @@
 import argparse
+import os
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+from tqdm import tqdm
 
 from grouper import find_images, group_by_time, get_timestamp
 from analyzer import analyze
@@ -58,8 +62,14 @@ def run(input_dir: Path, output_dir: Path, gap: int | None, blur_threshold: floa
         return
 
     print(f"Found {len(images)} images")
-    print("Analyzing images...")
-    all_analyses = {p: analyze(p) for p in images}
+    workers = min(4, os.cpu_count() or 1)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        results = list(tqdm(
+            executor.map(analyze, images),
+            total=len(images),
+            desc="Analyzing",
+        ))
+    all_analyses = dict(zip(images, results))
     face_counts = {p: all_analyses[p]["face_count"] for p in images}
 
     groups = group_by_time(images, gap_seconds=gap, use_clip=True, face_counts=face_counts)

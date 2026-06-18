@@ -1,6 +1,10 @@
+import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from datetime import datetime
 from PIL import Image
+from tqdm import tqdm
 
 EXIF_DATETIME_ORIGINAL = 36867
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
@@ -10,17 +14,20 @@ _SCENE_SIM_THRESHOLD = 0.82  # cosine similarity below this → new session
 
 _clip_model = None
 _clip_preprocess = None
+_clip_lock = threading.Lock()
 
 
 def _get_clip():
     global _clip_model, _clip_preprocess
     if _clip_model is None:
-        import open_clip
-        print("Loading CLIP model...")
-        _clip_model, _, _clip_preprocess = open_clip.create_model_and_transforms(
-            "ViT-B-32", pretrained="openai"
-        )
-        _clip_model.eval()
+        with _clip_lock:
+            if _clip_model is None:
+                import open_clip
+                print("Loading CLIP model...")
+                _clip_model, _, _clip_preprocess = open_clip.create_model_and_transforms(
+                    "ViT-B-32", pretrained="openai"
+                )
+                _clip_model.eval()
     return _clip_model, _clip_preprocess
 
 
@@ -138,8 +145,14 @@ def group_by_time(
 
     embeddings = None
     if use_clip:
-        print(f"Computing CLIP embeddings for {len(timestamped)} images...")
-        embeddings = [_embed(p) for _, p in timestamped]
+        workers = min(4, os.cpu_count() or 1)
+        paths_only = [p for _, p in timestamped]
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            embeddings = list(tqdm(
+                executor.map(_embed, paths_only),
+                total=len(paths_only),
+                desc="CLIP embeddings",
+            ))
 
     groups: list[list[Path]] = [[timestamped[0][1]]]
     for i, gap in enumerate(gaps):
