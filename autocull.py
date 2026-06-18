@@ -1,6 +1,7 @@
 import argparse
 import csv
 import hashlib
+import json
 import os
 import shutil
 from concurrent.futures import ThreadPoolExecutor
@@ -171,6 +172,7 @@ def run(
     kept = 0
     rejected = 0
     log_rows: list[dict] = []
+    meta: dict[str, dict] = {}  # dest_filename → analysis (written to .autocull_meta.json)
 
     def _log(session, path, result, reason, analysis, dest=""):
         if not log:
@@ -218,6 +220,7 @@ def run(
                 dest = _unique_dest(best_dir, dest_name)
                 transfer(str(p), str(dest))
                 dest_name = dest.name
+                meta[dest_name] = {k: analyses[p][k] for k in ("blur_score", "has_face", "eyes_closed", "smile_score", "face_count")}
             print(f"  [keep] {p.name} -> {dest_name}")
             kept += 1
             _log(i, p, "keep", "", analyses[p], dest_name)
@@ -233,6 +236,7 @@ def run(
                     dest = _unique_dest(best_dir, dest_name)
                     transfer(str(p), str(dest))
                     dest_name = dest.name
+                    meta[dest_name] = {k: a[k] for k in ("blur_score", "has_face", "eyes_closed", "smile_score", "face_count")}
                 print(f"  [keep] {p.name} -> {dest_name}")
                 kept += 1
                 _log(i, p, "keep", "", a, dest_name)
@@ -248,6 +252,8 @@ def run(
                         os.remove(p)
                     else:
                         transfer(str(p), str(rejected_dir / p.name))
+                        meta[p.name] = {k: a[k] for k in ("blur_score", "has_face", "eyes_closed", "smile_score", "face_count")}
+                        meta[p.name]["reason"] = reason
                 print(f"  [skip] {p.name} ({reason})")
                 rejected += 1
                 _log(i, p, "skip", reason, a)
@@ -267,6 +273,10 @@ def run(
             kept += 1
             _log("video", v, "keep", "video", None, dest_name)
 
+    if not dry_run and mode != "remove" and meta:
+        with open(output_dir / ".autocull_meta.json", "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False)
+
     suffix = " [DRY-RUN]" if dry_run else ""
     print(f"\nDone{suffix} - kept: {kept}, rejected: {rejected}")
 
@@ -284,6 +294,22 @@ def run(
 
     if not dry_run:
         print(f"Results in: {output_dir}")
+
+
+def organize_by_location(best_dir: Path) -> dict[str, int]:
+    """Move files in best_dir into location-named subdirectories using GPS."""
+    from grouper import find_images
+    images = find_images(best_dir, recursive=False)
+    counts: dict[str, int] = {}
+    for p in images:
+        coords = get_gps(p)
+        loc = place_name(*coords) if coords else "unknown"
+        sub = best_dir / loc
+        sub.mkdir(exist_ok=True)
+        dest = _unique_dest(sub, p.name)
+        shutil.move(str(p), str(dest))
+        counts[loc] = counts.get(loc, 0) + 1
+    return counts
 
 
 def main():
