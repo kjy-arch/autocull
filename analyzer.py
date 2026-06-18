@@ -42,23 +42,30 @@ def _get_landmarker() -> _mp_vision.FaceLandmarker:
 _SMILE_NAMES = {"mouthSmileLeft", "mouthSmileRight"}
 SMILE_THRESHOLD = 0.3
 
-def _get_cascade() -> cv2.CascadeClassifier:
+def _get_cascade() -> cv2.CascadeClassifier | None:
     if not hasattr(_local, "cascade"):
-        _local.cascade = cv2.CascadeClassifier(
+        cascade = cv2.CascadeClassifier(
             cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         )
+        _local.cascade = None if cascade.empty() else cascade
     return _local.cascade
 
 
 def _haar_face_count(img: np.ndarray) -> int:
+    cascade = _get_cascade()
+    if cascade is None:
+        return 0
     h, w = img.shape[:2]
     if w < 32 or h < 32:
         return 0
     scale = min(1.0, 1280 / w)
     small = cv2.resize(img, (int(w * scale), int(h * scale))) if scale < 1.0 else img
     gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-    faces = _get_cascade().detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4)
-    return len(faces)
+    try:
+        faces = cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4)
+        return len(faces)
+    except cv2.error:
+        return 0
 
 
 def _smile_score(blendshapes) -> float:
