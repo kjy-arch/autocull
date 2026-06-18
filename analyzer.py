@@ -82,10 +82,24 @@ def _ear(landmarks, indices: list[int], w: int, h: int) -> float:
     return (v1 + v2) / (2.0 * hz) if hz > 0 else 0.0
 
 
+def _face_region_blur(gray: np.ndarray, face_landmarks_list, w: int, h: int) -> float:
+    """Laplacian variance on the bounding box covering all detected faces."""
+    all_x = [lm.x * w for face in face_landmarks_list for lm in face]
+    all_y = [lm.y * h for face in face_landmarks_list for lm in face]
+    x1, x2 = max(0, int(min(all_x))), min(w, int(max(all_x)))
+    y1, y2 = max(0, int(min(all_y))), min(h, int(max(all_y)))
+    if x2 <= x1 or y2 <= y1:
+        return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    roi = gray[y1:y2, x1:x2]
+    if roi.size == 0:
+        return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    return float(cv2.Laplacian(roi, cv2.CV_64F).var())
+
+
 def analyze(path: Path) -> dict:
     """
     Returns:
-        blur_score  float  — higher = sharper (Laplacian variance)
+        blur_score  float  — higher = sharper (Laplacian variance, face region when available)
         has_face    bool
         eyes_closed bool   — True if any detected face has a closed eye
     """
@@ -99,6 +113,7 @@ def analyze(path: Path) -> dict:
         return {"blur_score": 0.0, "has_face": False, "eyes_closed": False, "smile_score": 0.0, "face_count": 0}
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # Global blur as fallback; overridden by face-region blur below when faces are found
     blur_score = float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
     h, w = img.shape[:2]
@@ -113,6 +128,9 @@ def analyze(path: Path) -> dict:
             # so exclude from face_split to avoid spurious session breaks
             return {"blur_score": blur_score, "has_face": True, "eyes_closed": False, "smile_score": 0.0, "face_count": 0}
         return {"blur_score": blur_score, "has_face": False, "eyes_closed": False, "smile_score": 0.0, "face_count": 0}
+
+    # Measure sharpness on face region only — avoids soft/dark backgrounds skewing the score
+    blur_score = _face_region_blur(gray, result.face_landmarks, w, h)
 
     eyes_closed = any(
         _ear(face, _LEFT_EYE, w, h) < EAR_CLOSED_THRESHOLD

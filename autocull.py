@@ -243,8 +243,6 @@ def run(
             else:
                 if a["eyes_closed"]:
                     reason = "eyes closed"
-                elif a["blur_score"] < blur_threshold:
-                    reason = "blurry"
                 else:
                     reason = "not best"
                 if not dry_run:
