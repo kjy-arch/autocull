@@ -1,4 +1,5 @@
 import os
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -12,6 +13,7 @@ VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".3gp", ".wmv", ".mt
 _EXIF_IFD = 0x8769
 _FALLBACK_GAP = 120.0  # 2-minute fallback when distribution has no clear boundary
 _SCENE_SIM_THRESHOLD = 0.75  # cosine similarity below this → new session
+_INTRA_SESSION_SIM_THRESHOLD = 0.85  # within-session sub-scene split threshold
 
 _clip_model = None
 _clip_preprocess = None
@@ -54,7 +56,36 @@ def _cosine_sim(a, b) -> float:
         return 1.0
 
 
+def has_exif_timestamp(path: Path) -> bool:
+    """EXIF DateTimeOriginal 필드가 있을 때만 True — 시간 기반 세션 분류의 신뢰도 판별에 사용."""
+    try:
+        img = Image.open(path)
+        return bool(img.getexif().get_ifd(_EXIF_IFD).get(EXIF_DATETIME_ORIGINAL))
+    except Exception:
+        return False
+
+
+def cluster_by_clip(paths: list[Path]) -> tuple[list[list[Path]], dict]:
+    """CLIP 임베딩으로 시각적 유사도 클러스터링.
+
+    EXIF가 없는 사진(카카오톡·SNS 저장 등)에 사용 — 시간 근접성 대신
+    내용 유사도 기준으로 그룹핑하여 전혀 다른 사진이 1장으로 줄어드는 것을 방지.
+    """
+    if not paths:
+        return [], {}
+    workers = min(4, os.cpu_count() or 1)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        embs = list(tqdm(
+            executor.map(_embed, paths),
+            total=len(paths),
+            desc="CLIP (EXIF 없는 사진)",
+        ))
+    emb_dict = {p: e for p, e in zip(paths, embs)}
+    return split_by_clip(paths, emb_dict), emb_dict
+
+
 def get_timestamp(path: Path) -> datetime | None:
+    # 1. EXIF DateTimeOriginal
     try:
         img = Image.open(path)
         dt_str = img.getexif().get_ifd(_EXIF_IFD).get(EXIF_DATETIME_ORIGINAL)
@@ -62,6 +93,24 @@ def get_timestamp(path: Path) -> datetime | None:
             return datetime.strptime(dt_str, "%Y:%m:%d %H:%M:%S")
     except Exception:
         pass
+
+    # 2. Unix timestamp in filename (KakaoTalk · SNS 저장 사진: 10자리=초, 13자리=밀리초)
+    m = re.fullmatch(r"\d{10,13}", path.stem)
+    if m:
+        ts = int(m.group())
+        if len(m.group()) == 13:
+            ts //= 1000
+        try:
+            return datetime.fromtimestamp(ts)
+        except (OSError, ValueError, OverflowError):
+            pass
+
+    # 3. 파일 수정 시각 (최후 수단)
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime)
+    except Exception:
+        pass
+
     return None
 
 
@@ -151,9 +200,9 @@ def group_by_time(
     timestamped.sort(key=lambda x: x[0])
 
     if not timestamped:
-        return []
+        return [], {}
     if len(timestamped) == 1:
-        return [[timestamped[0][1]]]
+        return [[timestamped[0][1]]], {}
 
     gaps = [
         (timestamped[i][0] - timestamped[i - 1][0]).total_seconds()
@@ -187,4 +236,57 @@ def group_by_time(
             groups.append([])
         groups[-1].append(p_next)
 
-    return groups
+    emb_dict: dict[Path, object] = {}
+    if embeddings is not None:
+        for (_, p), emb in zip(timestamped, embeddings):
+            emb_dict[p] = emb
+    return groups, emb_dict
+
+
+def split_by_clip(
+    group: list[Path],
+    embeddings: dict,
+    threshold: float = _INTRA_SESSION_SIM_THRESHOLD,
+) -> list[list[Path]]:
+    """Split a session into sub-scenes by clustering on CLIP embeddings.
+
+    Uses a running-centroid greedy algorithm: each new photo is assigned to
+    the most similar existing cluster; if similarity < threshold a new cluster
+    is started.  Photos with no embedding are appended to the current cluster.
+    """
+    if len(group) <= 1:
+        return [group]
+
+    clusters: list[list[Path]] = []
+    sums: list = []  # running sum of (normalized) embeddings per cluster
+
+    for p in group:
+        emb = embeddings.get(p)
+
+        if not clusters:
+            clusters.append([p])
+            sums.append(emb)
+            continue
+
+        if emb is None:
+            clusters[-1].append(p)
+            continue
+
+        best_sim, best_idx = -1.0, 0
+        for k, s in enumerate(sums):
+            if s is None:
+                sim = 1.0
+            else:
+                sim = float((emb * s / s.norm()).sum())
+            if sim > best_sim:
+                best_sim, best_idx = sim, k
+
+        if best_sim < threshold:
+            clusters.append([p])
+            sums.append(emb)
+        else:
+            clusters[best_idx].append(p)
+            if sums[best_idx] is not None:
+                sums[best_idx] = sums[best_idx] + emb
+
+    return clusters

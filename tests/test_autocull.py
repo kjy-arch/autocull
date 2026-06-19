@@ -165,14 +165,15 @@ class TestRun:
         assert best_files[0].name.startswith("20240101_")
         assert (tmp_path / "out" / "rejected" / "blurry.jpg").exists()
 
-    def test_warns_about_images_without_exif(self, tmp_path, capsys):
+    def test_images_without_exif_are_processed_via_mtime(self, tmp_path):
         input_dir = tmp_path / "in"
         input_dir.mkdir()
         _make_jpeg(input_dir / "with_exif.jpg", "2024:01:01 10:00:00")
         _make_jpeg(input_dir / "no_exif.jpg")
         with patch("autocull.get_gps", return_value=None):
             run(input_dir, tmp_path / "out", gap=15, blur_threshold=0.0, mode="copy")
-        assert "Warning" in capsys.readouterr().out
+        best_files = list((tmp_path / "out" / "best").iterdir())
+        assert len(best_files) == 2
 
     def test_dry_run_creates_no_files(self, tmp_path, capsys):
         input_dir = tmp_path / "in"

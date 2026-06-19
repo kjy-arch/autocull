@@ -6,7 +6,8 @@ import piexif
 import pytest
 from PIL import Image
 
-from grouper import _FALLBACK_GAP, _find_session_threshold, find_images, get_timestamp, group_by_time
+from datetime import datetime
+from grouper import _FALLBACK_GAP, _find_session_threshold, find_images, get_timestamp, group_by_time, split_by_clip, has_exif_timestamp, cluster_by_clip
 
 
 def _make_jpeg(path: Path, dt_str: str | None = None) -> Path:
@@ -24,9 +25,21 @@ class TestGetTimestamp:
         path = _make_jpeg(tmp_path / "a.jpg", "2024:06:15 10:30:00")
         assert get_timestamp(path) == datetime(2024, 6, 15, 10, 30, 0)
 
-    def test_returns_none_without_exif(self, tmp_path):
-        path = _make_jpeg(tmp_path / "a.jpg")
-        assert get_timestamp(path) is None
+    def test_falls_back_to_mtime_without_exif(self, tmp_path):
+        path = _make_jpeg(tmp_path / "a.jpg")  # 비숫자 파일명, EXIF 없음
+        assert isinstance(get_timestamp(path), datetime)
+
+    def test_parses_13digit_unix_ms_timestamp_from_filename(self, tmp_path):
+        path = _make_jpeg(tmp_path / "1379498137130.jpg")
+        assert get_timestamp(path) == datetime.fromtimestamp(1379498137)
+
+    def test_parses_10digit_unix_seconds_timestamp_from_filename(self, tmp_path):
+        path = _make_jpeg(tmp_path / "1379498137.jpg")
+        assert get_timestamp(path) == datetime.fromtimestamp(1379498137)
+
+    def test_exif_takes_priority_over_filename_timestamp(self, tmp_path):
+        path = _make_jpeg(tmp_path / "1379498137130.jpg", "2024:06:15 10:30:00")
+        assert get_timestamp(path) == datetime(2024, 6, 15, 10, 30, 0)
 
     def test_returns_none_for_missing_file(self, tmp_path):
         assert get_timestamp(tmp_path / "missing.jpg") is None
@@ -34,35 +47,37 @@ class TestGetTimestamp:
 
 class TestGroupByTime:
     def test_empty_returns_empty(self):
-        assert group_by_time([]) == []
+        groups, _ = group_by_time([])
+        assert groups == []
 
     def test_single_image_forms_one_group(self, tmp_path):
         p = _make_jpeg(tmp_path / "a.jpg", "2024:01:01 10:00:00")
-        assert group_by_time([p], gap_seconds=15) == [[p]]
+        assert group_by_time([p], gap_seconds=15)[0] == [[p]]
 
     def test_two_images_within_gap_are_grouped(self, tmp_path):
         p1 = _make_jpeg(tmp_path / "a.jpg", "2024:01:01 10:00:00")
         p2 = _make_jpeg(tmp_path / "b.jpg", "2024:01:01 10:00:10")
-        groups = group_by_time([p1, p2], gap_seconds=15)
+        groups, _ = group_by_time([p1, p2], gap_seconds=15)
         assert len(groups) == 1
         assert set(groups[0]) == {p1, p2}
 
     def test_two_images_beyond_gap_form_separate_groups(self, tmp_path):
         p1 = _make_jpeg(tmp_path / "a.jpg", "2024:01:01 10:00:00")
         p2 = _make_jpeg(tmp_path / "b.jpg", "2024:01:01 10:01:00")
-        assert len(group_by_time([p1, p2], gap_seconds=15)) == 2
+        assert len(group_by_time([p1, p2], gap_seconds=15)[0]) == 2
 
-    def test_images_without_timestamp_are_excluded(self, tmp_path):
+    def test_images_without_exif_included_via_mtime(self, tmp_path):
         p1 = _make_jpeg(tmp_path / "a.jpg", "2024:01:01 10:00:00")
-        p2 = _make_jpeg(tmp_path / "b.jpg")
-        groups = group_by_time([p1, p2], gap_seconds=15)
-        assert len(groups) == 1
-        assert groups[0] == [p1]
+        p2 = _make_jpeg(tmp_path / "b.jpg")  # EXIF 없음 → mtime fallback
+        groups, _ = group_by_time([p1, p2], gap_seconds=15)
+        all_photos = [p for g in groups for p in g]
+        assert p1 in all_photos
+        assert p2 in all_photos
 
     def test_groups_are_sorted_by_timestamp(self, tmp_path):
         p_late = _make_jpeg(tmp_path / "a.jpg", "2024:01:01 10:00:10")
         p_early = _make_jpeg(tmp_path / "b.jpg", "2024:01:01 10:00:00")
-        groups = group_by_time([p_late, p_early], gap_seconds=15)
+        groups, _ = group_by_time([p_late, p_early], gap_seconds=15)
         assert groups[0] == [p_early, p_late]
 
 
@@ -130,21 +145,21 @@ class TestAdaptiveGrouping:
     def test_single_burst_stays_together(self, tmp_path):
         photos = [_make_jpeg(tmp_path / f"p{i}.jpg", f"2024:01:01 10:00:0{i}") for i in range(5)]
         with patch("grouper._embed", return_value=None):
-            assert len(group_by_time(photos)) == 1
+            assert len(group_by_time(photos)[0]) == 1
 
     def test_two_bursts_separated_by_minutes_split_automatically(self, tmp_path):
         burst1 = [_make_jpeg(tmp_path / f"a{i}.jpg", f"2024:01:01 10:00:0{i}") for i in range(5)]
         burst2 = [_make_jpeg(tmp_path / f"b{i}.jpg", f"2024:01:01 10:10:0{i}") for i in range(5)]
         with patch("grouper._embed", return_value=None):
-            groups = group_by_time(burst1 + burst2)
+            groups, _ = group_by_time(burst1 + burst2)
         assert len(groups) == 2
 
     def test_gap_seconds_overrides_auto_detection(self, tmp_path):
         p1 = _make_jpeg(tmp_path / "a.jpg", "2024:01:01 10:00:00")
         p2 = _make_jpeg(tmp_path / "b.jpg", "2024:01:01 10:01:00")
-        assert len(group_by_time([p1, p2], gap_seconds=15)) == 2
+        assert len(group_by_time([p1, p2], gap_seconds=15)[0]) == 2
         with patch("grouper._embed", return_value=None):
-            assert len(group_by_time([p1, p2])) == 1
+            assert len(group_by_time([p1, p2])[0]) == 1
 
     def test_clip_splits_scene_change_within_time_threshold(self, tmp_path):
         import torch
@@ -154,7 +169,7 @@ class TestAdaptiveGrouping:
         emb_a = torch.tensor([[1.0, 0.0]])
         emb_b = torch.tensor([[0.0, 1.0]])
         with patch("grouper._embed", side_effect=[emb_a, emb_b]):
-            groups = group_by_time([p1, p2], gap_seconds=30, use_clip=True)
+            groups, _ = group_by_time([p1, p2], gap_seconds=30, use_clip=True)
         assert len(groups) == 2
 
     def test_clip_keeps_similar_scenes_together(self, tmp_path):
@@ -164,26 +179,111 @@ class TestAdaptiveGrouping:
         # Simulate identical embeddings (cosine sim = 1.0)
         emb = torch.tensor([[1.0, 0.0]])
         with patch("grouper._embed", return_value=emb):
-            groups = group_by_time([p1, p2], gap_seconds=30, use_clip=True)
+            groups, _ = group_by_time([p1, p2], gap_seconds=30, use_clip=True)
         assert len(groups) == 1
 
     def test_face_count_change_splits_session(self, tmp_path):
         p1 = _make_jpeg(tmp_path / "a.jpg", "2024:01:01 10:00:00")
         p2 = _make_jpeg(tmp_path / "b.jpg", "2024:01:01 10:00:05")
         face_counts = {p1: 2, p2: 1}
-        groups = group_by_time([p1, p2], gap_seconds=30, face_counts=face_counts)
+        groups, _ = group_by_time([p1, p2], gap_seconds=30, face_counts=face_counts)
         assert len(groups) == 2
 
     def test_face_count_same_stays_together(self, tmp_path):
         p1 = _make_jpeg(tmp_path / "a.jpg", "2024:01:01 10:00:00")
         p2 = _make_jpeg(tmp_path / "b.jpg", "2024:01:01 10:00:05")
         face_counts = {p1: 2, p2: 2}
-        groups = group_by_time([p1, p2], gap_seconds=30, face_counts=face_counts)
+        groups, _ = group_by_time([p1, p2], gap_seconds=30, face_counts=face_counts)
         assert len(groups) == 1
 
     def test_zero_face_count_not_split(self, tmp_path):
         p1 = _make_jpeg(tmp_path / "a.jpg", "2024:01:01 10:00:00")
         p2 = _make_jpeg(tmp_path / "b.jpg", "2024:01:01 10:00:05")
         face_counts = {p1: 0, p2: 2}
-        groups = group_by_time([p1, p2], gap_seconds=30, face_counts=face_counts)
+        groups, _ = group_by_time([p1, p2], gap_seconds=30, face_counts=face_counts)
         assert len(groups) == 1
+
+
+class TestHasExifTimestamp:
+    def test_returns_true_with_exif(self, tmp_path):
+        path = _make_jpeg(tmp_path / "a.jpg", "2024:06:15 10:30:00")
+        assert has_exif_timestamp(path) is True
+
+    def test_returns_false_without_exif(self, tmp_path):
+        path = _make_jpeg(tmp_path / "a.jpg")
+        assert has_exif_timestamp(path) is False
+
+    def test_returns_false_for_missing_file(self, tmp_path):
+        assert has_exif_timestamp(tmp_path / "missing.jpg") is False
+
+
+class TestClusterByClip:
+    def test_empty_returns_empty(self):
+        assert cluster_by_clip([]) == ([], {})
+
+    def test_single_photo_forms_one_cluster(self, tmp_path):
+        p = _make_jpeg(tmp_path / "a.jpg")
+        with patch("grouper._embed", return_value=None):
+            clusters, _ = cluster_by_clip([p])
+        assert clusters == [[p]]
+
+    def test_similar_photos_stay_together(self, tmp_path):
+        import torch
+        p1, p2 = _make_jpeg(tmp_path / "a.jpg"), _make_jpeg(tmp_path / "b.jpg")
+        emb = torch.tensor([[1.0, 0.0]])
+        with patch("grouper._embed", return_value=emb):
+            clusters, _ = cluster_by_clip([p1, p2])
+        assert len(clusters) == 1
+
+    def test_dissimilar_photos_split(self, tmp_path):
+        import torch
+        p1, p2 = _make_jpeg(tmp_path / "a.jpg"), _make_jpeg(tmp_path / "b.jpg")
+        embs = iter([torch.tensor([[1.0, 0.0]]), torch.tensor([[0.0, 1.0]])])
+        with patch("grouper._embed", side_effect=lambda _: next(embs)):
+            clusters, _ = cluster_by_clip([p1, p2])
+        assert len(clusters) == 2
+
+
+class TestSplitByClip:
+    def test_single_photo_returns_one_cluster(self, tmp_path):
+        p = tmp_path / "a.jpg"
+        p.write_bytes(b"")
+        assert split_by_clip([p], {}) == [[p]]
+
+    def test_empty_embeddings_groups_all_together(self, tmp_path):
+        p1, p2 = tmp_path / "a.jpg", tmp_path / "b.jpg"
+        p1.write_bytes(b"")
+        p2.write_bytes(b"")
+        assert len(split_by_clip([p1, p2], {})) == 1
+
+    def test_similar_embeddings_stay_in_one_cluster(self, tmp_path):
+        import torch
+        p1, p2 = tmp_path / "a.jpg", tmp_path / "b.jpg"
+        p1.write_bytes(b"")
+        p2.write_bytes(b"")
+        emb = torch.tensor([[1.0, 0.0]])
+        clusters = split_by_clip([p1, p2], {p1: emb, p2: emb})
+        assert len(clusters) == 1
+        assert set(clusters[0]) == {p1, p2}
+
+    def test_dissimilar_embeddings_split_into_two_clusters(self, tmp_path):
+        import torch
+        p1, p2 = tmp_path / "a.jpg", tmp_path / "b.jpg"
+        p1.write_bytes(b"")
+        p2.write_bytes(b"")
+        emb1 = torch.tensor([[1.0, 0.0]])
+        emb2 = torch.tensor([[0.0, 1.0]])  # cosine sim = 0.0 < threshold
+        clusters = split_by_clip([p1, p2], {p1: emb1, p2: emb2})
+        assert len(clusters) == 2
+
+    def test_three_photos_two_scenes(self, tmp_path):
+        import torch
+        p1, p2, p3 = [tmp_path / f"{n}.jpg" for n in "abc"]
+        for p in (p1, p2, p3):
+            p.write_bytes(b"")
+        emb_a = torch.tensor([[1.0, 0.0]])
+        emb_b = torch.tensor([[0.0, 1.0]])
+        # p1 and p2 are scene A, p3 is scene B
+        clusters = split_by_clip([p1, p2, p3], {p1: emb_a, p2: emb_a, p3: emb_b})
+        assert len(clusters) == 2
+        assert p3 in clusters[1]

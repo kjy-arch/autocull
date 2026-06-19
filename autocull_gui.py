@@ -331,6 +331,7 @@ class ThumbnailGrid(QScrollArea):
         self.kind = kind
         self._cards: dict[str, ThumbnailCard] = {}
         self._order: list[str] = []
+        self._blur_scores: dict[str, float] = {}
 
         self.setWidgetResizable(True)
         self.setAcceptDrops(True)
@@ -350,6 +351,8 @@ class ThumbnailGrid(QScrollArea):
         card.double_clicked.connect(self.card_double_clicked)
         self._cards[path_str] = card
         self._order.append(path_str)
+        if meta and isinstance(meta.get("blur_score"), (int, float)):
+            self._blur_scores[path_str] = float(meta["blur_score"])
         i = len(self._order) - 1
         self._grid.addWidget(card, i // COLS, i % COLS)
 
@@ -358,6 +361,7 @@ class ThumbnailGrid(QScrollArea):
             return None
         card = self._cards.pop(path_str)
         self._order.remove(path_str)
+        self._blur_scores.pop(path_str, None)
         pixmap = card._pixmap
         card.hide()
         self._grid.removeWidget(card)
@@ -376,6 +380,15 @@ class ThumbnailGrid(QScrollArea):
             self._grid.addWidget(card, i // COLS, i % COLS)
             card.show()
 
+    def sort_by(self, key: str):
+        if key == "name":
+            self._order.sort(key=lambda p: Path(p).name.lower())
+        elif key == "blur_desc":
+            self._order.sort(key=lambda p: self._blur_scores.get(p, 0.0), reverse=True)
+        elif key == "blur_asc":
+            self._order.sort(key=lambda p: self._blur_scores.get(p, 0.0))
+        self._rebuild_layout()
+
     def clear_all(self):
         while self._grid.count():
             item = self._grid.takeAt(0)
@@ -383,6 +396,7 @@ class ThumbnailGrid(QScrollArea):
                 item.widget().deleteLater()
         self._cards.clear()
         self._order.clear()
+        self._blur_scores.clear()
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasText():
@@ -540,6 +554,17 @@ class MainWindow(QMainWindow):
         results_w = QWidget()
         rl = QVBoxLayout(results_w)
         rl.setContentsMargins(0, 4, 0, 0)
+        rl.setSpacing(4)
+
+        sort_row = QHBoxLayout()
+        sort_row.addWidget(QLabel("정렬:"))
+        self.classify_sort_combo = QComboBox()
+        self.classify_sort_combo.addItems(["파일명", "선명도 ↓ (높음→낮음)", "선명도 ↑ (낮음→높음)"])
+        self.classify_sort_combo.setFixedWidth(180)
+        self.classify_sort_combo.currentIndexChanged.connect(self._on_classify_sort_changed)
+        sort_row.addWidget(self.classify_sort_combo)
+        sort_row.addStretch()
+        rl.addLayout(sort_row)
 
         self._classify_splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter = self._classify_splitter
@@ -646,6 +671,16 @@ class MainWindow(QMainWindow):
         row.addWidget(self.reclass_progress, 2)
         layout.addLayout(row)
 
+        sort_row = QHBoxLayout()
+        sort_row.addWidget(QLabel("정렬:"))
+        self.reclass_sort_combo = QComboBox()
+        self.reclass_sort_combo.addItems(["파일명", "선명도 ↓ (높음→낮음)", "선명도 ↑ (낮음→높음)"])
+        self.reclass_sort_combo.setFixedWidth(180)
+        self.reclass_sort_combo.currentIndexChanged.connect(self._on_reclass_sort_changed)
+        sort_row.addWidget(self.reclass_sort_combo)
+        sort_row.addStretch()
+        layout.addLayout(sort_row)
+
         self._reclass_splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter = self._reclass_splitter
 
@@ -698,6 +733,18 @@ class MainWindow(QMainWindow):
 
     # ── Settings persistence  (기능 6) ─────────────────────────────────────
 
+    _SORT_KEYS = ["name", "blur_desc", "blur_asc"]
+
+    def _on_classify_sort_changed(self, idx: int):
+        key = self._SORT_KEYS[idx]
+        self.kept_grid.sort_by(key)
+        self.rej_grid.sort_by(key)
+
+    def _on_reclass_sort_changed(self, idx: int):
+        key = self._SORT_KEYS[idx]
+        self.reclass_kept_grid.sort_by(key)
+        self.reclass_rej_grid.sort_by(key)
+
     def _load_settings(self):
         s = QSettings("AutoCull", "AutoCull")
         self.input_edit.setText(s.value("input_dir", ""))
@@ -709,6 +756,8 @@ class MainWindow(QMainWindow):
         self.dry_run_cb.setChecked(s.value("dry_run", False, type=bool))
         self.log_cb.setChecked(s.value("log_csv", False, type=bool))
         self.recursive_cb.setChecked(s.value("recursive", False, type=bool))
+        self.classify_sort_combo.setCurrentIndex(int(s.value("classify_sort", 0)))
+        self.reclass_sort_combo.setCurrentIndex(int(s.value("reclass_sort", 0)))
 
     def closeEvent(self, event):
         s = QSettings("AutoCull", "AutoCull")
@@ -719,6 +768,8 @@ class MainWindow(QMainWindow):
         s.setValue("dry_run", self.dry_run_cb.isChecked())
         s.setValue("log_csv", self.log_cb.isChecked())
         s.setValue("recursive", self.recursive_cb.isChecked())
+        s.setValue("classify_sort", self.classify_sort_combo.currentIndex())
+        s.setValue("reclass_sort", self.reclass_sort_combo.currentIndex())
         event.accept()
 
     # ── Folder pickers ─────────────────────────────────────────────────────
@@ -829,6 +880,10 @@ class MainWindow(QMainWindow):
                     self._meta = json.load(f)
             except Exception:
                 self._meta = {}
+            try:
+                meta_path.unlink()
+            except OSError:
+                pass
 
         self._kept_paths = sorted(
             p for p in (best_dir.iterdir() if best_dir.exists() else [])
@@ -863,6 +918,9 @@ class MainWindow(QMainWindow):
             self.rej_grid.add_card(path, pixmap, self._meta.get(path.name))
 
     def _on_load_done(self):
+        key = self._SORT_KEYS[self.classify_sort_combo.currentIndex()]
+        self.kept_grid.sort_by(key)
+        self.rej_grid.sort_by(key)
         self.kept_label.setText(
             f"보관 ({len(self._kept_paths)})  💡 더블클릭=미리보기 / 드래그=이동"
         )
@@ -919,12 +977,17 @@ class MainWindow(QMainWindow):
         self.kept_label.setText(f"보관 ({len(self._kept_paths)}) — 로딩 중...")
         loader = ThumbnailLoader(self._kept_paths, [])
         loader.ready.connect(self._on_thumb_ready)  # signature: (kind, path_str, qimg)
-        loader.done.connect(lambda: self.kept_label.setText(
-            f"보관 ({len(self._kept_paths)})  💡 더블클릭=미리보기 / 드래그=이동"
-        ))
+        loader.done.connect(self._on_organize_load_done)
         loader.start()
         self._loader = loader
         self.classify_tabs.setCurrentIndex(1)
+
+    def _on_organize_load_done(self):
+        key = self._SORT_KEYS[self.classify_sort_combo.currentIndex()]
+        self.kept_grid.sort_by(key)
+        self.kept_label.setText(
+            f"보관 ({len(self._kept_paths)})  💡 더블클릭=미리보기 / 드래그=이동"
+        )
 
     def _on_organize_error(self, msg: str):
         self.log_edit.append(f"[오류] 장소별 정리 실패: {msg}")
@@ -972,6 +1035,9 @@ class MainWindow(QMainWindow):
             self.reclass_rej_grid.add_card(path, pixmap, self._meta.get(path.name))
 
     def _on_reclass_load_done(self):
+        key = self._SORT_KEYS[self.reclass_sort_combo.currentIndex()]
+        self.reclass_kept_grid.sort_by(key)
+        self.reclass_rej_grid.sort_by(key)
         self.reclass_kept_label.setText(
             f"보관 ({len(self._reclass_kept_paths)})  💡 더블클릭=미리보기 / 드래그=이동"
         )

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from grouper import find_images, find_videos, group_by_time, get_timestamp
+from grouper import find_images, find_videos, group_by_time, get_timestamp, split_by_clip, has_exif_timestamp, cluster_by_clip
 from analyzer import analyze
 from location import get_gps, place_name
 
@@ -151,13 +151,24 @@ def run(
     if exact_dupes:
         print(f"  {len(exact_dupes)} exact duplicate(s) will be rejected")
 
-    face_counts = {p: all_analyses[p]["face_count"] for p in after_exact}
-    groups = group_by_time(after_exact, gap_seconds=gap, use_clip=True, face_counts=face_counts)
-    skipped = len(after_exact) - sum(len(g) for g in groups)
+    exif_photos = [p for p in after_exact if has_exif_timestamp(p)]
+    fallback_photos = [p for p in after_exact if p not in set(exif_photos)]
+
+    face_counts = {p: all_analyses[p]["face_count"] for p in exif_photos}
+    groups, clip_embeddings = group_by_time(exif_photos, gap_seconds=gap, use_clip=True, face_counts=face_counts)
+
+    skipped = len(exif_photos) - sum(len(g) for g in groups)
     if skipped:
         print(f"Warning: {skipped} image(s) skipped — no EXIF timestamp")
     gap_info = f"{gap}s" if gap is not None else "auto"
     print(f"Grouped into {len(groups)} session(s) [gap={gap_info}]")
+
+    if fallback_photos:
+        print(f"  EXIF 없는 사진 {len(fallback_photos)}장 → 시각적 유사도 클러스터링")
+        fb_groups, fb_embs = cluster_by_clip(fallback_photos)
+        groups.extend(fb_groups)
+        clip_embeddings.update(fb_embs)
+        print(f"  → {len(fb_groups)}개 시각 클러스터")
 
     if dry_run:
         print("[DRY-RUN] No files will be moved or copied.\n")
@@ -211,50 +222,62 @@ def run(
 
         group = session_unique
         analyses = {p: all_analyses[p] for p in group}
-        print(f"Session {i} ({len(group)} photo{'s' if len(group) > 1 else ''}):")
 
-        if len(group) == 1:
-            p = group[0]
-            dest_name = _best_filename(p)
-            if not dry_run and mode != "remove":
-                dest = _unique_dest(best_dir, dest_name)
-                transfer(str(p), str(dest))
-                dest_name = dest.name
-                meta[dest_name] = {k: analyses[p][k] for k in ("blur_score", "has_face", "eyes_closed", "smile_score", "face_count")}
-            print(f"  [keep] {p.name} -> {dest_name}")
-            kept += 1
-            _log(i, p, "keep", "", analyses[p], dest_name)
-            continue
+        sub_groups = split_by_clip(group, clip_embeddings)
+        n_sub = len(sub_groups)
+        sub_info = f", {n_sub} sub-scenes" if n_sub > 1 else ""
+        print(f"Session {i} ({len(group)} photo{'s' if len(group) > 1 else ''}{sub_info}):")
 
-        best = pick_best(group, analyses)
+        for j, sub_group in enumerate(sub_groups, 1):
+            session_id = f"{i}.{j}" if n_sub > 1 else i
+            a_sub = {p: analyses[p] for p in sub_group}
+            indent = "    " if n_sub > 1 else "  "
 
-        for p in group:
-            a = analyses[p]
-            if p == best:
+            if n_sub > 1:
+                print(f"  [sub-scene {j}/{n_sub} — {len(sub_group)} photo{'s' if len(sub_group) > 1 else ''}]")
+
+            if len(sub_group) == 1:
+                p = sub_group[0]
                 dest_name = _best_filename(p)
                 if not dry_run and mode != "remove":
                     dest = _unique_dest(best_dir, dest_name)
                     transfer(str(p), str(dest))
                     dest_name = dest.name
-                    meta[dest_name] = {k: a[k] for k in ("blur_score", "has_face", "eyes_closed", "smile_score", "face_count")}
-                print(f"  [keep] {p.name} -> {dest_name}")
+                    meta[dest_name] = {k: a_sub[p][k] for k in ("blur_score", "has_face", "eyes_closed", "smile_score", "face_count")}
+                print(f"{indent}[keep] {p.name} -> {dest_name}")
                 kept += 1
-                _log(i, p, "keep", "", a, dest_name)
-            else:
-                if a["eyes_closed"]:
-                    reason = "eyes closed"
+                _log(session_id, p, "keep", "", a_sub[p], dest_name)
+                continue
+
+            best = pick_best(sub_group, a_sub)
+
+            for p in sub_group:
+                a = a_sub[p]
+                if p == best:
+                    dest_name = _best_filename(p)
+                    if not dry_run and mode != "remove":
+                        dest = _unique_dest(best_dir, dest_name)
+                        transfer(str(p), str(dest))
+                        dest_name = dest.name
+                        meta[dest_name] = {k: a[k] for k in ("blur_score", "has_face", "eyes_closed", "smile_score", "face_count")}
+                    print(f"{indent}[keep] {p.name} -> {dest_name}")
+                    kept += 1
+                    _log(session_id, p, "keep", "", a, dest_name)
                 else:
-                    reason = "not best"
-                if not dry_run:
-                    if mode == "remove":
-                        os.remove(p)
+                    if a["eyes_closed"]:
+                        reason = "eyes closed"
                     else:
-                        transfer(str(p), str(rejected_dir / p.name))
-                        meta[p.name] = {k: a[k] for k in ("blur_score", "has_face", "eyes_closed", "smile_score", "face_count")}
-                        meta[p.name]["reason"] = reason
-                print(f"  [skip] {p.name} ({reason})")
-                rejected += 1
-                _log(i, p, "skip", reason, a)
+                        reason = "not best"
+                    if not dry_run:
+                        if mode == "remove":
+                            os.remove(p)
+                        else:
+                            transfer(str(p), str(rejected_dir / p.name))
+                            meta[p.name] = {k: a[k] for k in ("blur_score", "has_face", "eyes_closed", "smile_score", "face_count")}
+                            meta[p.name]["reason"] = reason
+                    print(f"{indent}[skip] {p.name} ({reason})")
+                    rejected += 1
+                    _log(session_id, p, "skip", reason, a)
 
     # Move all video files to best/ (no culling for videos)
     videos = find_videos(input_dir, recursive=recursive, exclude=_excludes)
