@@ -165,7 +165,7 @@ class TestRun:
         assert best_files[0].name.startswith("20240101_")
         assert (tmp_path / "out" / "rejected" / "blurry.jpg").exists()
 
-    def test_images_without_exif_are_processed_via_mtime(self, tmp_path):
+    def test_images_without_exif_go_directly_to_best(self, tmp_path):
         input_dir = tmp_path / "in"
         input_dir.mkdir()
         _make_jpeg(input_dir / "with_exif.jpg", "2024:01:01 10:00:00")

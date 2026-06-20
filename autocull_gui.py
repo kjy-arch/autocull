@@ -96,8 +96,9 @@ class ThumbnailLoader(QThread):
 
     def _load(self, path: Path) -> QImage:
         try:
-            from PIL import Image
+            from PIL import Image, ImageOps
             img = Image.open(path)
+            img = ImageOps.exif_transpose(img)
             img.thumbnail((THUMB_SIZE, THUMB_SIZE), Image.LANCZOS)
             img = img.convert("RGB")
             data = img.tobytes("raw", "RGB")
@@ -177,8 +178,9 @@ class ImagePreviewDialog(QDialog):
         avail_w = self.width() - 24
         avail_h = self.height() - 100
         try:
-            from PIL import Image
+            from PIL import Image, ImageOps
             img = Image.open(path)
+            img = ImageOps.exif_transpose(img)
             img.thumbnail((avail_w, avail_h), Image.LANCZOS)
             img = img.convert("RGB")
             data = img.tobytes("raw", "RGB")
@@ -332,6 +334,9 @@ class ThumbnailGrid(QScrollArea):
         self._cards: dict[str, ThumbnailCard] = {}
         self._order: list[str] = []
         self._blur_scores: dict[str, float] = {}
+        self._face_flags: dict[str, bool] = {}
+        self._group_mode: bool = False
+        self._sep_widgets: list[QLabel] = []
 
         self.setWidgetResizable(True)
         self.setAcceptDrops(True)
@@ -353,8 +358,13 @@ class ThumbnailGrid(QScrollArea):
         self._order.append(path_str)
         if meta and isinstance(meta.get("blur_score"), (int, float)):
             self._blur_scores[path_str] = float(meta["blur_score"])
-        i = len(self._order) - 1
-        self._grid.addWidget(card, i // COLS, i % COLS)
+        if meta and "has_face" in meta:
+            self._face_flags[path_str] = bool(meta["has_face"])
+        if self._group_mode:
+            self._rebuild_layout()
+        else:
+            i = len(self._order) - 1
+            self._grid.addWidget(card, i // COLS, i % COLS)
 
     def remove_card(self, path_str: str) -> QPixmap | None:
         if path_str not in self._cards:
@@ -362,6 +372,7 @@ class ThumbnailGrid(QScrollArea):
         card = self._cards.pop(path_str)
         self._order.remove(path_str)
         self._blur_scores.pop(path_str, None)
+        self._face_flags.pop(path_str, None)
         pixmap = card._pixmap
         card.hide()
         self._grid.removeWidget(card)
@@ -373,23 +384,60 @@ class ThumbnailGrid(QScrollArea):
     def _rebuild_layout(self):
         for p in self._order:
             self._cards[p].hide()
+        for w in self._sep_widgets:
+            w.deleteLater()
+        self._sep_widgets.clear()
         while self._grid.count():
             self._grid.takeAt(0)
-        for i, p in enumerate(self._order):
-            card = self._cards[p]
-            self._grid.addWidget(card, i // COLS, i % COLS)
-            card.show()
+
+        if self._group_mode:
+            face = [p for p in self._order if self._face_flags.get(p, False)]
+            bg = [p for p in self._order if not self._face_flags.get(p, False)]
+            grid_row = 0
+            for title, color, group in [
+                ("인물", "#e8f5e9", face),
+                ("배경", "#e3f2fd", bg),
+            ]:
+                if not group:
+                    continue
+                hdr = QLabel(f"  {title}  ({len(group)}장)")
+                hdr.setFixedHeight(28)
+                hdr.setStyleSheet(
+                    f"font-weight: bold; font-size: 11px; padding: 4px 6px; "
+                    f"background: {color}; border-radius: 3px;"
+                )
+                self._grid.addWidget(hdr, grid_row, 0, 1, COLS)
+                self._sep_widgets.append(hdr)
+                grid_row += 1
+                for i, p in enumerate(group):
+                    self._grid.addWidget(self._cards[p], grid_row + i // COLS, i % COLS)
+                    self._cards[p].show()
+                grid_row += (len(group) + COLS - 1) // COLS
+        else:
+            for i, p in enumerate(self._order):
+                card = self._cards[p]
+                self._grid.addWidget(card, i // COLS, i % COLS)
+                card.show()
 
     def sort_by(self, key: str):
-        if key == "name":
-            self._order.sort(key=lambda p: Path(p).name.lower())
-        elif key == "blur_desc":
-            self._order.sort(key=lambda p: self._blur_scores.get(p, 0.0), reverse=True)
-        elif key == "blur_asc":
-            self._order.sort(key=lambda p: self._blur_scores.get(p, 0.0))
+        if key == "group_face":
+            self._group_mode = True
+            # 인물 먼저, 각 그룹 내에서 선명도 내림차순
+            self._order.sort(key=lambda p: (not self._face_flags.get(p, False), -self._blur_scores.get(p, 0.0)))
+        else:
+            self._group_mode = False
+            if key == "name":
+                self._order.sort(key=lambda p: Path(p).name.lower())
+            elif key == "blur_desc":
+                self._order.sort(key=lambda p: self._blur_scores.get(p, 0.0), reverse=True)
+            elif key == "blur_asc":
+                self._order.sort(key=lambda p: self._blur_scores.get(p, 0.0))
         self._rebuild_layout()
 
     def clear_all(self):
+        for w in self._sep_widgets:
+            w.deleteLater()
+        self._sep_widgets.clear()
         while self._grid.count():
             item = self._grid.takeAt(0)
             if item.widget():
@@ -397,6 +445,8 @@ class ThumbnailGrid(QScrollArea):
         self._cards.clear()
         self._order.clear()
         self._blur_scores.clear()
+        self._face_flags.clear()
+        self._group_mode = False
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasText():
@@ -559,7 +609,7 @@ class MainWindow(QMainWindow):
         sort_row = QHBoxLayout()
         sort_row.addWidget(QLabel("정렬:"))
         self.classify_sort_combo = QComboBox()
-        self.classify_sort_combo.addItems(["파일명", "선명도 ↓ (높음→낮음)", "선명도 ↑ (낮음→높음)"])
+        self.classify_sort_combo.addItems(["파일명", "선명도 ↓ (높음→낮음)", "선명도 ↑ (낮음→높음)", "인물/배경 구분"])
         self.classify_sort_combo.setFixedWidth(180)
         self.classify_sort_combo.currentIndexChanged.connect(self._on_classify_sort_changed)
         sort_row.addWidget(self.classify_sort_combo)
@@ -674,7 +724,7 @@ class MainWindow(QMainWindow):
         sort_row = QHBoxLayout()
         sort_row.addWidget(QLabel("정렬:"))
         self.reclass_sort_combo = QComboBox()
-        self.reclass_sort_combo.addItems(["파일명", "선명도 ↓ (높음→낮음)", "선명도 ↑ (낮음→높음)"])
+        self.reclass_sort_combo.addItems(["파일명", "선명도 ↓ (높음→낮음)", "선명도 ↑ (낮음→높음)", "인물/배경 구분"])
         self.reclass_sort_combo.setFixedWidth(180)
         self.reclass_sort_combo.currentIndexChanged.connect(self._on_reclass_sort_changed)
         sort_row.addWidget(self.reclass_sort_combo)
@@ -733,7 +783,7 @@ class MainWindow(QMainWindow):
 
     # ── Settings persistence  (기능 6) ─────────────────────────────────────
 
-    _SORT_KEYS = ["name", "blur_desc", "blur_asc"]
+    _SORT_KEYS = ["name", "blur_desc", "blur_asc", "group_face"]
 
     def _on_classify_sort_changed(self, idx: int):
         key = self._SORT_KEYS[idx]

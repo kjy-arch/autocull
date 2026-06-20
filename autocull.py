@@ -9,7 +9,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from grouper import find_images, find_videos, group_by_time, get_timestamp, split_by_clip, has_exif_timestamp, cluster_by_clip
+from grouper import find_images, find_videos, group_by_time, get_timestamp, split_by_clip, has_exif_timestamp
 from analyzer import analyze
 from location import get_gps, place_name
 
@@ -164,11 +164,7 @@ def run(
     print(f"Grouped into {len(groups)} session(s) [gap={gap_info}]")
 
     if fallback_photos:
-        print(f"  EXIF 없는 사진 {len(fallback_photos)}장 → 시각적 유사도 클러스터링")
-        fb_groups, fb_embs = cluster_by_clip(fallback_photos)
-        groups.extend(fb_groups)
-        clip_embeddings.update(fb_embs)
-        print(f"  → {len(fb_groups)}개 시각 클러스터")
+        print(f"  EXIF 없는 사진 {len(fallback_photos)}장 → best/ 일괄 이동 (중복만 제외)")
 
     if dry_run:
         print("[DRY-RUN] No files will be moved or copied.\n")
@@ -278,6 +274,19 @@ def run(
                     print(f"{indent}[skip] {p.name} ({reason})")
                     rejected += 1
                     _log(session_id, p, "skip", reason, a)
+
+    # EXIF 없는 사진 (SNS/카카오톡 다운로드 등) → best/ 직접 이동
+    if fallback_photos:
+        print(f"\nEXIF 없는 사진 {len(fallback_photos)}장 → best/ 이동")
+        for p in fallback_photos:
+            dest_name = p.name
+            if not dry_run and mode != "remove":
+                dest = _unique_dest(best_dir, p.name)
+                transfer(str(p), str(dest))
+                dest_name = dest.name
+            print(f"  [keep] {p.name} -> {dest_name}")
+            kept += 1
+            _log("sns", p, "keep", "no EXIF", all_analyses.get(p), dest_name)
 
     # Move all video files to best/ (no culling for videos)
     videos = find_videos(input_dir, recursive=recursive, exclude=_excludes)
