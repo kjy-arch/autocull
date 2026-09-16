@@ -222,6 +222,25 @@ class TestRun:
         best_files = list((tmp_path / "out" / "best").iterdir())
         assert len(best_files) == 1
 
+    def test_videos_are_moved_to_best(self, tmp_path):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _make_jpeg(input_dir / "a.jpg", "2024:01:01 10:00:00")
+        (input_dir / "clip.mp4").write_bytes(b"not a real video")
+        with patch("autocull.get_gps", return_value=None):
+            run(input_dir, tmp_path / "out", gap=15, blur_threshold=0.0, mode="copy")
+        assert (tmp_path / "out" / "best" / "clip.mp4").exists()
+
+    def test_remove_mode_leaves_videos_in_place(self, tmp_path):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _make_jpeg(input_dir / "a.jpg", "2024:01:01 10:00:00")
+        (input_dir / "clip.mp4").write_bytes(b"not a real video")
+        with patch("autocull.get_gps", return_value=None):
+            run(input_dir, tmp_path / "out", gap=15, blur_threshold=0.0, mode="remove")
+        assert (input_dir / "clip.mp4").exists()
+        assert not (tmp_path / "out" / "best").exists()
+
     def test_cutoff_rejects_blurry_photo_and_keeps_sharp_one(self, tmp_path):
         input_dir = tmp_path / "in"
         input_dir.mkdir()

@@ -148,9 +148,6 @@ def run(
         ))
     all_analyses = dict(zip(after_exact, results))
 
-    if exact_dupes:
-        print(f"  {len(exact_dupes)} exact duplicate(s) will be rejected")
-
     # 선명도 컷오프 — 0(기본값)이면 비활성. 그룹핑 전에 걸러내므로 세션 대표도 예외가 아니다.
     blurry: list[Path] = []
     if blur_threshold > 0:
@@ -161,7 +158,8 @@ def run(
             print(f"  {len(blurry)} photo(s) below sharpness cutoff ({blur_threshold:g})")
 
     exif_photos = [p for p in after_exact if has_exif_timestamp(p)]
-    fallback_photos = [p for p in after_exact if p not in set(exif_photos)]
+    exif_set = set(exif_photos)
+    fallback_photos = [p for p in after_exact if p not in exif_set]
 
     face_counts = {p: all_analyses[p]["face_count"] for p in exif_photos}
     groups, clip_embeddings = group_by_time(exif_photos, gap_seconds=gap, use_clip=True, face_counts=face_counts)
@@ -315,10 +313,12 @@ def run(
     # Move all video files to best/ (no culling for videos)
     videos = find_videos(input_dir, recursive=recursive, exclude=_excludes)
     if videos:
-        print(f"\nFound {len(videos)} video(s) - moving to best/")
+        # remove 모드는 제외된 파일만 지우고 보관 파일은 제자리에 두므로 동영상도 옮기지 않는다
+        action = "kept in place" if mode == "remove" else "moving to best/"
+        print(f"\nFound {len(videos)} video(s) - {action}")
         for v in videos:
             dest_name = v.name
-            if not dry_run:
+            if not dry_run and mode != "remove":
                 best_dir.mkdir(parents=True, exist_ok=True)
                 dest = _unique_dest(best_dir, v.name)
                 transfer(str(v), str(dest))

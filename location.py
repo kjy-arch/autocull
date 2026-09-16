@@ -51,10 +51,12 @@ def _reverse_geocode(lat: float, lon: float) -> str | None:
     if elapsed < 1.0:
         time.sleep(1.0 - elapsed)
 
+    # 요청 직전에 기록해야 실패했을 때도 다음 요청이 1초 간격을 지킨다
+    _last_request = time.time()
+
     try:
         geolocator = Nominatim(user_agent="autocull/1.0")
         result = geolocator.reverse((lat, lon), language="ko", timeout=5)
-        _last_request = time.time()
 
         if not result:
             return None

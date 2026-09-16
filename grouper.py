@@ -65,25 +65,6 @@ def has_exif_timestamp(path: Path) -> bool:
         return False
 
 
-def cluster_by_clip(paths: list[Path]) -> tuple[list[list[Path]], dict]:
-    """CLIP 임베딩으로 시각적 유사도 클러스터링.
-
-    EXIF가 없는 사진(카카오톡·SNS 저장 등)에 사용 — 시간 근접성 대신
-    내용 유사도 기준으로 그룹핑하여 전혀 다른 사진이 1장으로 줄어드는 것을 방지.
-    """
-    if not paths:
-        return [], {}
-    workers = min(4, os.cpu_count() or 1)
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        embs = list(tqdm(
-            executor.map(_embed, paths),
-            total=len(paths),
-            desc="CLIP (EXIF 없는 사진)",
-        ))
-    emb_dict = {p: e for p, e in zip(paths, embs)}
-    return split_by_clip(paths, emb_dict), emb_dict
-
-
 def get_timestamp(path: Path) -> datetime | None:
     # 1. EXIF DateTimeOriginal
     try:
@@ -148,21 +129,23 @@ def _find_session_threshold(gaps: list[float]) -> float:
 
     arr = sorted(gaps)
     n = len(arr)
+    total = sum(arr)
     best_var, best_i = 0.0, None
+    mu_l = mu_r = 0.0
 
+    # 누적합으로 각 분할점의 좌/우 평균을 O(1)에 구한다 (전체 O(n))
+    prefix = 0.0
     for i in range(1, n):
+        prefix += arr[i - 1]
         w_l, w_r = i / n, (n - i) / n
-        mu_l = sum(arr[:i]) / i
-        mu_r = sum(arr[i:]) / (n - i)
-        between_var = w_l * w_r * (mu_l - mu_r) ** 2
+        left, right = prefix / i, (total - prefix) / (n - i)
+        between_var = w_l * w_r * (left - right) ** 2
         if between_var > best_var:
             best_var, best_i = between_var, i
+            mu_l, mu_r = left, right
 
     if best_i is None:
         return _FALLBACK_GAP
-
-    mu_l = sum(arr[:best_i]) / best_i
-    mu_r = sum(arr[best_i:]) / (n - best_i)
 
     # Require between-session gaps to be at least 5× longer than within-session gaps
     if mu_l <= 0 or mu_r / mu_l < 5:
@@ -188,7 +171,7 @@ def group_by_time(
     gap_seconds: int | None = None,
     use_clip: bool = False,
     face_counts: dict | None = None,
-) -> list[list[Path]]:
+) -> tuple[list[list[Path]], dict]:
     """
     Groups photos by session.
     If gap_seconds is given, use it as a fixed time threshold.

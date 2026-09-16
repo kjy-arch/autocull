@@ -7,7 +7,7 @@ import pytest
 from PIL import Image
 
 from datetime import datetime
-from grouper import _FALLBACK_GAP, _find_session_threshold, find_images, get_timestamp, group_by_time, split_by_clip, has_exif_timestamp, cluster_by_clip
+from grouper import _FALLBACK_GAP, _find_session_threshold, find_images, get_timestamp, group_by_time, split_by_clip, has_exif_timestamp
 
 
 def _make_jpeg(path: Path, dt_str: str | None = None) -> Path:
@@ -217,31 +217,6 @@ class TestHasExifTimestamp:
         assert has_exif_timestamp(tmp_path / "missing.jpg") is False
 
 
-class TestClusterByClip:
-    def test_empty_returns_empty(self):
-        assert cluster_by_clip([]) == ([], {})
-
-    def test_single_photo_forms_one_cluster(self, tmp_path):
-        p = _make_jpeg(tmp_path / "a.jpg")
-        with patch("grouper._embed", return_value=None):
-            clusters, _ = cluster_by_clip([p])
-        assert clusters == [[p]]
-
-    def test_similar_photos_stay_together(self, tmp_path):
-        import torch
-        p1, p2 = _make_jpeg(tmp_path / "a.jpg"), _make_jpeg(tmp_path / "b.jpg")
-        emb = torch.tensor([[1.0, 0.0]])
-        with patch("grouper._embed", return_value=emb):
-            clusters, _ = cluster_by_clip([p1, p2])
-        assert len(clusters) == 1
-
-    def test_dissimilar_photos_split(self, tmp_path):
-        import torch
-        p1, p2 = _make_jpeg(tmp_path / "a.jpg"), _make_jpeg(tmp_path / "b.jpg")
-        embs = iter([torch.tensor([[1.0, 0.0]]), torch.tensor([[0.0, 1.0]])])
-        with patch("grouper._embed", side_effect=lambda _: next(embs)):
-            clusters, _ = cluster_by_clip([p1, p2])
-        assert len(clusters) == 2
 
 
 class TestSplitByClip:
