@@ -222,6 +222,17 @@ class TestRun:
         best_files = list((tmp_path / "out" / "best").iterdir())
         assert len(best_files) == 1
 
+    def test_remove_mode_sends_rejects_to_trash(self, tmp_path):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _make_jpeg(input_dir / "sharp.jpg", "2024:01:01 10:00:00", sharp=True)
+        _make_jpeg(input_dir / "blurry.jpg", "2024:01:01 10:00:01", sharp=False)
+        with patch("autocull.get_gps", return_value=None), \
+             patch("autocull.send2trash") as trash:
+            run(input_dir, tmp_path / "out", gap=15, blur_threshold=0.0, mode="remove")
+        assert [Path(c.args[0]).name for c in trash.call_args_list] == ["blurry.jpg"]
+        assert (input_dir / "sharp.jpg").exists()
+
     def test_videos_are_moved_to_best(self, tmp_path):
         input_dir = tmp_path / "in"
         input_dir.mkdir()

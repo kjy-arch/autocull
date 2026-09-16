@@ -6,4 +6,5 @@ open-clip-torch>=2.20
 torch>=2.0
 tqdm>=4.65
 imagehash>=4.3
+Send2Trash>=1.8
 PyQt6>=6.5

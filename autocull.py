@@ -7,6 +7,7 @@ import shutil
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from send2trash import send2trash
 from tqdm import tqdm
 
 from grouper import find_images, find_videos, group_by_time, get_timestamp, split_by_clip, has_exif_timestamp
@@ -201,7 +202,7 @@ def run(
     for p in exact_dupes:
         if not dry_run:
             if mode == "remove":
-                os.remove(p)
+                send2trash(str(p))
             else:
                 transfer(str(p), str(_unique_dest(rejected_dir, p.name)))
         print(f"  [skip] {p.name} (exact duplicate)")
@@ -212,7 +213,7 @@ def run(
         a = all_analyses[p]
         if not dry_run:
             if mode == "remove":
-                os.remove(p)
+                send2trash(str(p))
             else:
                 dest = _unique_dest(rejected_dir, p.name)
                 transfer(str(p), str(dest))
@@ -230,7 +231,7 @@ def run(
         for p in phash_dupes:
             if not dry_run:
                 if mode == "remove":
-                    os.remove(p)
+                    send2trash(str(p))
                 else:
                     transfer(str(p), str(_unique_dest(rejected_dir, p.name)))
             print(f"  [skip] {p.name} (perceptual duplicate)")
@@ -287,7 +288,7 @@ def run(
                         reason = "not best"
                     if not dry_run:
                         if mode == "remove":
-                            os.remove(p)
+                            send2trash(str(p))
                         else:
                             dest = _unique_dest(rejected_dir, p.name)
                             transfer(str(p), str(dest))

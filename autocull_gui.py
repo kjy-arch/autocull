@@ -15,7 +15,8 @@ from PyQt6.QtGui import QPixmap, QFont, QImage, QColor, QDrag
 
 THUMB_SIZE = 200
 COLS = 3
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".heic", ".tif", ".tiff", ".bmp", ".webp"}
+# grouper.IMAGE_EXTENSIONS와 동일하게 유지 - 코어가 처리하지 못하는 확장자를 보여주지 않기 위해
+IMAGE_EXTS = {".jpg", ".jpeg", ".png"}
 
 
 # ---------------------------------------------------------------------------
@@ -872,7 +873,7 @@ class MainWindow(QMainWindow):
         if mode == "remove":
             reply = QMessageBox.warning(
                 self, "주의",
-                "실행 시 제외된 파일은 영구 삭제됩니다.\n그래도 하시겠습니까?",
+                "실행 시 제외된 파일은 휴지통으로 이동됩니다.\n그래도 하시겠습니까?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -921,7 +922,7 @@ class MainWindow(QMainWindow):
             self.run_btn.setEnabled(True)
             if self._mode == "remove" and success:
                 self.log_edit.append(
-                    "\n[remove 모드] 제외 파일이 삭제되었습니다. "
+                    "\n[remove 모드] 제외 파일을 휴지통으로 보냈습니다. "
                     "결과 탭은 copy/move 모드에서만 사용 가능합니다."
                 )
             return
