@@ -145,12 +145,12 @@ class TestRun:
             run(input_dir, tmp_path / "out", gap=15, blur_threshold=0.0, mode="copy")
         assert (tmp_path / "out" / "best" / "20240101_unknown.jpg").exists()
 
-    def test_single_image_always_kept_regardless_of_blur(self, tmp_path):
+    def test_single_image_kept_regardless_of_blur_when_cutoff_disabled(self, tmp_path):
         input_dir = tmp_path / "in"
         input_dir.mkdir()
         _make_jpeg(input_dir / "a.jpg", "2024:01:01 10:00:00", sharp=False)
         with patch("autocull.get_gps", return_value=None):
-            run(input_dir, tmp_path / "out", gap=15, blur_threshold=10000.0, mode="copy")
+            run(input_dir, tmp_path / "out", gap=15, blur_threshold=0.0, mode="copy")
         assert (tmp_path / "out" / "best" / "20240101_unknown.jpg").exists()
 
     def test_best_of_two_goes_to_best_rejected_keeps_original_name(self, tmp_path):
@@ -221,6 +221,62 @@ class TestRun:
             run(input_dir, tmp_path / "out", gap=15, blur_threshold=0.0, mode="copy", recursive=True)
         best_files = list((tmp_path / "out" / "best").iterdir())
         assert len(best_files) == 1
+
+    def test_cutoff_rejects_blurry_photo_and_keeps_sharp_one(self, tmp_path):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _make_jpeg(input_dir / "sharp.jpg", "2024:01:01 10:00:00", sharp=True)
+        _make_jpeg(input_dir / "blurry.jpg", "2024:01:01 10:00:01", sharp=False)
+        with patch("autocull.get_gps", return_value=None):
+            run(input_dir, tmp_path / "out", gap=15, blur_threshold=50.0, mode="copy")
+        assert len(list((tmp_path / "out" / "best").iterdir())) == 1
+        assert (tmp_path / "out" / "rejected" / "blurry.jpg").exists()
+
+    def test_cutoff_rejects_photo_that_would_otherwise_be_best(self, tmp_path):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _make_jpeg(input_dir / "a.jpg", "2024:01:01 10:00:00", sharp=False)
+        _make_jpeg(input_dir / "b.jpg", "2024:01:01 10:00:01", sharp=False)
+        with patch("autocull.get_gps", return_value=None):
+            run(input_dir, tmp_path / "out", gap=15, blur_threshold=50.0, mode="copy")
+        assert list((tmp_path / "out" / "best").iterdir()) == []
+        assert len(list((tmp_path / "out" / "rejected").iterdir())) == 2
+
+    def test_cutoff_rejection_is_logged_as_blurry(self, tmp_path):
+        import csv as _csv
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _make_jpeg(input_dir / "a.jpg", "2024:01:01 10:00:00", sharp=False)
+        with patch("autocull.get_gps", return_value=None):
+            run(input_dir, tmp_path / "out", gap=15, blur_threshold=50.0, mode="copy", log=True)
+        with open(tmp_path / "out" / "autocull_log.csv", encoding="utf-8") as f:
+            rows = list(_csv.DictReader(f))
+        assert [(r["filename"], r["result"], r["reason"]) for r in rows] == [("a.jpg", "skip", "blurry")]
+
+    def test_exact_duplicates_with_same_name_are_not_overwritten(self, tmp_path):
+        input_dir = tmp_path / "in"
+        for name in ("sub1", "sub2", "sub3"):
+            (input_dir / name).mkdir(parents=True)
+        src = _make_jpeg(input_dir / "sub1" / "dup.jpg", "2024:01:01 10:00:00")
+        data = src.read_bytes()
+        (input_dir / "sub2" / "dup.jpg").write_bytes(data)
+        (input_dir / "sub3" / "dup.jpg").write_bytes(data)
+        with patch("autocull.get_gps", return_value=None):
+            run(input_dir, tmp_path / "out", gap=15, blur_threshold=0.0, mode="move", recursive=True)
+        rejected = sorted(p.name for p in (tmp_path / "out" / "rejected").iterdir())
+        assert rejected == ["dup.jpg", "dup_2.jpg"]
+
+    def test_rejected_photos_with_same_name_are_not_overwritten(self, tmp_path):
+        input_dir = tmp_path / "in"
+        for name in ("sub1", "sub2"):
+            (input_dir / name).mkdir(parents=True)
+        _make_jpeg(input_dir / "sharp.jpg", "2024:01:01 10:00:00", sharp=True)
+        _make_jpeg(input_dir / "sub1" / "dup.jpg", "2024:01:01 10:00:01", sharp=False)
+        _make_jpeg(input_dir / "sub2" / "dup.jpg", "2024:01:01 10:00:02", sharp=False)
+        with patch("autocull.get_gps", return_value=None):
+            run(input_dir, tmp_path / "out", gap=15, blur_threshold=0.0, mode="move", recursive=True)
+        rejected = sorted(p.name for p in (tmp_path / "out" / "rejected").iterdir())
+        assert rejected == ["dup.jpg", "dup_2.jpg"]
 
 
 class TestExactDuplicates:

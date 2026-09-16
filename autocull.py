@@ -151,6 +151,15 @@ def run(
     if exact_dupes:
         print(f"  {len(exact_dupes)} exact duplicate(s) will be rejected")
 
+    # 선명도 컷오프 — 0(기본값)이면 비활성. 그룹핑 전에 걸러내므로 세션 대표도 예외가 아니다.
+    blurry: list[Path] = []
+    if blur_threshold > 0:
+        blurry = [p for p in after_exact if all_analyses[p]["blur_score"] < blur_threshold]
+        blurry_set = set(blurry)
+        after_exact = [p for p in after_exact if p not in blurry_set]
+        if blurry:
+            print(f"  {len(blurry)} photo(s) below sharpness cutoff ({blur_threshold:g})")
+
     exif_photos = [p for p in after_exact if has_exif_timestamp(p)]
     fallback_photos = [p for p in after_exact if p not in set(exif_photos)]
 
@@ -159,7 +168,7 @@ def run(
 
     skipped = len(exif_photos) - sum(len(g) for g in groups)
     if skipped:
-        print(f"Warning: {skipped} image(s) skipped — no EXIF timestamp")
+        print(f"Warning: {skipped} image(s) skipped - no EXIF timestamp")
     gap_info = f"{gap}s" if gap is not None else "auto"
     print(f"Grouped into {len(groups)} session(s) [gap={gap_info}]")
 
@@ -196,10 +205,24 @@ def run(
             if mode == "remove":
                 os.remove(p)
             else:
-                transfer(str(p), str(rejected_dir / p.name))
+                transfer(str(p), str(_unique_dest(rejected_dir, p.name)))
         print(f"  [skip] {p.name} (exact duplicate)")
         rejected += 1
         _log("", p, "skip", "exact duplicate", None)
+
+    for p in blurry:
+        a = all_analyses[p]
+        if not dry_run:
+            if mode == "remove":
+                os.remove(p)
+            else:
+                dest = _unique_dest(rejected_dir, p.name)
+                transfer(str(p), str(dest))
+                meta[dest.name] = {k: a[k] for k in ("blur_score", "has_face", "eyes_closed", "smile_score", "face_count")}
+                meta[dest.name]["reason"] = "blurry"
+        print(f"  [skip] {p.name} (blurry)")
+        rejected += 1
+        _log("", p, "skip", "blurry", a)
 
     for i, group in enumerate(groups, 1):
         # Perceptual dedupe within each session — keeps sharpest copy
@@ -211,7 +234,7 @@ def run(
                 if mode == "remove":
                     os.remove(p)
                 else:
-                    transfer(str(p), str(rejected_dir / p.name))
+                    transfer(str(p), str(_unique_dest(rejected_dir, p.name)))
             print(f"  [skip] {p.name} (perceptual duplicate)")
             rejected += 1
             _log(i, p, "skip", "perceptual duplicate", analyses[p])
@@ -230,7 +253,7 @@ def run(
             indent = "    " if n_sub > 1 else "  "
 
             if n_sub > 1:
-                print(f"  [sub-scene {j}/{n_sub} — {len(sub_group)} photo{'s' if len(sub_group) > 1 else ''}]")
+                print(f"  [sub-scene {j}/{n_sub} - {len(sub_group)} photo{'s' if len(sub_group) > 1 else ''}]")
 
             if len(sub_group) == 1:
                 p = sub_group[0]
@@ -268,9 +291,10 @@ def run(
                         if mode == "remove":
                             os.remove(p)
                         else:
-                            transfer(str(p), str(rejected_dir / p.name))
-                            meta[p.name] = {k: a[k] for k in ("blur_score", "has_face", "eyes_closed", "smile_score", "face_count")}
-                            meta[p.name]["reason"] = reason
+                            dest = _unique_dest(rejected_dir, p.name)
+                            transfer(str(p), str(dest))
+                            meta[dest.name] = {k: a[k] for k in ("blur_score", "has_face", "eyes_closed", "smile_score", "face_count")}
+                            meta[dest.name]["reason"] = reason
                     print(f"{indent}[skip] {p.name} ({reason})")
                     rejected += 1
                     _log(session_id, p, "skip", reason, a)
@@ -291,7 +315,7 @@ def run(
     # Move all video files to best/ (no culling for videos)
     videos = find_videos(input_dir, recursive=recursive, exclude=_excludes)
     if videos:
-        print(f"\nFound {len(videos)} video(s) — moving to best/")
+        print(f"\nFound {len(videos)} video(s) - moving to best/")
         for v in videos:
             dest_name = v.name
             if not dry_run:
@@ -344,7 +368,7 @@ def organize_by_location(best_dir: Path) -> dict[str, int]:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="AutoCull — automatically group and cull burst photos"
+        description="AutoCull - automatically group and cull burst photos"
     )
     parser.add_argument("--input", required=True, help="Folder containing photos")
     parser.add_argument("--output", required=True, help="Folder for sorted results")
@@ -357,8 +381,8 @@ def main():
     parser.add_argument(
         "--blur-threshold",
         type=float,
-        default=100.0,
-        help="Minimum sharpness score to keep a photo (default: 100)",
+        default=0.0,
+        help="Reject photos scoring below this sharpness value, even the best of a session (0 = disabled, default: 0)",
     )
     parser.add_argument(
         "--mode",

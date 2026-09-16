@@ -553,7 +553,12 @@ class MainWindow(QMainWindow):
         row.addWidget(QLabel("선명도 기준:"))
         self.blur_spin = QDoubleSpinBox()
         self.blur_spin.setRange(0, 10000)
-        self.blur_spin.setValue(100.0)
+        self.blur_spin.setValue(0.0)
+        self.blur_spin.setSpecialValueText("사용 안 함")
+        self.blur_spin.setToolTip(
+            "이 값보다 선명도가 낮은 사진은 세션 대표라도 제외됩니다.\n"
+            "0이면 선명도로는 거르지 않습니다."
+        )
         self.blur_spin.setFixedWidth(80)
         row.addWidget(self.blur_spin)
         row.addSpacing(20)
@@ -799,7 +804,9 @@ class MainWindow(QMainWindow):
         s = QSettings("AutoCull", "AutoCull")
         self.input_edit.setText(s.value("input_dir", ""))
         self.output_edit.setText(s.value("output_dir", ""))
-        self.blur_spin.setValue(float(s.value("blur_threshold", 100.0)))
+        # blur_threshold(구 키)는 실제로 아무 동작도 하지 않던 값이라, 저장된 100이
+        # 되살아나 갑자기 사진을 걸러내지 않도록 새 키를 쓴다.
+        self.blur_spin.setValue(float(s.value("blur_cutoff", 0.0)))
         idx = self.mode_combo.findText(s.value("mode", "copy"))
         if idx >= 0:
             self.mode_combo.setCurrentIndex(idx)
@@ -813,7 +820,7 @@ class MainWindow(QMainWindow):
         s = QSettings("AutoCull", "AutoCull")
         s.setValue("input_dir", self.input_edit.text())
         s.setValue("output_dir", self.output_edit.text())
-        s.setValue("blur_threshold", self.blur_spin.value())
+        s.setValue("blur_cutoff", self.blur_spin.value())
         s.setValue("mode", self.mode_combo.currentText())
         s.setValue("dry_run", self.dry_run_cb.isChecked())
         s.setValue("log_csv", self.log_cb.isChecked())
