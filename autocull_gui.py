@@ -18,6 +18,24 @@ COLS = 3
 # grouper.IMAGE_EXTENSIONS와 동일하게 유지 - 코어가 처리하지 못하는 확장자를 보여주지 않기 위해
 IMAGE_EXTS = {".jpg", ".jpeg", ".png"}
 
+# Windows Smart App Control은 서명 없는 DLL(cv2.pyd 등) 로딩을 간헐적으로 차단한다.
+# 트레이스백만 보이면 앱이 고장 난 것처럼 보이므로 사람이 읽을 안내를 앞에 붙인다.
+_APP_CONTROL_MARKERS = ("애플리케이션 제어 정책", "application control policy")
+_APP_CONTROL_HINT = (
+    "⛔ Windows Smart App Control이 프로그램 구성 파일을 차단했습니다.\n"
+    "AutoCull의 오류가 아닙니다. [분석 시작]을 다시 누르면 대개 통과합니다.\n"
+    "계속 막히면 설정 > 개인 정보 및 보안 > Windows 보안 > 앱 및 브라우저 컨트롤 >\n"
+    "스마트 앱 컨트롤에서 끌 수 있습니다 (한 번 끄면 다시 켤 수 없으니 주의하세요).\n"
+    "--- 아래는 개발용 상세 오류 ---"
+)
+
+
+def app_control_hint(trace: str) -> str | None:
+    """앱 제어 정책 차단이면 사용자용 안내 문구를, 아니면 None을 반환한다."""
+    if any(m in trace for m in _APP_CONTROL_MARKERS):
+        return _APP_CONTROL_HINT
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Stdout → Qt signal bridge
@@ -64,7 +82,11 @@ class AnalysisWorker(QThread):
             run(**self.params)
             self.finished.emit(True)
         except Exception:
-            self.log.emit(traceback.format_exc())
+            trace = traceback.format_exc()
+            hint = app_control_hint(trace)
+            if hint:
+                self.log.emit(hint)
+            self.log.emit(trace)
             self.finished.emit(False)
         finally:
             _sys.stdout = old_out
