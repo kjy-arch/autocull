@@ -1,5 +1,6 @@
 import sys
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -41,18 +42,48 @@ def app_control_hint(trace: str) -> str | None:
 # Stdout → Qt signal bridge
 # ---------------------------------------------------------------------------
 
+# tqdm 진행 줄: "Analyzing:  38%|###    | 188/507 [00:22<00:31,  9.93it/s]"
+_TQDM_RE = re.compile(
+    r"^(?P<desc>[^:|]+):\s*(?P<pct>\d+)%\|[^|]*\|\s*(?P<n>\d+)/(?P<total>\d+)\s*\[(?P<time>[^\]]*)\]"
+)
+
+
+def parse_progress(line: str) -> tuple[str, int] | None:
+    """tqdm 진행 줄에서 (표시 문구, 퍼센트)를 뽑는다. 형식이 다르면 None."""
+    m = _TQDM_RE.match(line)
+    if not m:
+        return None
+    elapsed = m.group("time").split(",")[0].strip()
+    return f"{m.group('desc')} {m.group('n')}/{m.group('total')}  {elapsed}", int(m.group("pct"))
+
+
 class _LogStream:
-    def __init__(self, signal):
-        self._signal = signal
+    """stdout/stderr를 Qt 시그널로 넘긴다.
+
+    tqdm은 진행 상황을 \\r로만 끝나는 조각으로 쏟아낸다. 개행만 기다리면 507장치
+    진행 표시가 한 줄에 전부 누적되므로, \\r 조각은 progress로 따로 빼서 진행률
+    표시에만 쓰고 로그에는 남기지 않는다.
+    """
+
+    def __init__(self, log_signal, progress_signal):
+        self._log = log_signal
+        self._progress = progress_signal
         self._buf = ""
 
     def write(self, text):
         self._buf += text
-        while "\n" in self._buf:
-            line, self._buf = self._buf.split("\n", 1)
-            cleaned = line.replace("\r", "").strip()
-            if cleaned:
-                self._signal.emit(cleaned)
+        while True:
+            breaks = [i for i in (self._buf.find("\n"), self._buf.find("\r")) if i >= 0]
+            if not breaks:
+                break
+            i = min(breaks)
+            line, sep, self._buf = self._buf[:i].strip(), self._buf[i], self._buf[i + 1:]
+            if not line:
+                continue
+            if sep == "\r":
+                self._progress.emit(line)
+            else:
+                self._log.emit(line)
 
     def flush(self):
         pass
@@ -64,6 +95,7 @@ class _LogStream:
 
 class AnalysisWorker(QThread):
     log = pyqtSignal(str)
+    progress = pyqtSignal(str)
     finished = pyqtSignal(bool)
 
     def __init__(self, params: dict):
@@ -74,7 +106,7 @@ class AnalysisWorker(QThread):
         import sys as _sys
         import traceback
         old_out, old_err = _sys.stdout, _sys.stderr
-        stream = _LogStream(self.log)
+        stream = _LogStream(self.log, self.progress)
         _sys.stdout = stream
         _sys.stderr = stream
         try:
@@ -909,6 +941,8 @@ class MainWindow(QMainWindow):
         self._gps_btn.setEnabled(False)
 
         self.run_btn.setEnabled(False)
+        self.progress_bar.setRange(0, 0)  # 첫 진행률이 올 때까지는 불확정 표시
+        self.progress_bar.setFormat("")
         self.progress_bar.setVisible(True)
         self.log_edit.clear()
         self.kept_grid.clear_all()
@@ -930,8 +964,19 @@ class MainWindow(QMainWindow):
 
         self._worker = AnalysisWorker(params)
         self._worker.log.connect(self._on_log)
+        self._worker.progress.connect(self._on_progress)
         self._worker.finished.connect(self._on_analysis_done)
         self._worker.start()
+
+    def _on_progress(self, line: str):
+        parsed = parse_progress(line)
+        if not parsed:
+            return
+        text, pct = parsed
+        if self.progress_bar.maximum() == 0:
+            self.progress_bar.setRange(0, 100)
+        self.progress_bar.setFormat(f"{text}  (%p%)")
+        self.progress_bar.setValue(pct)
 
     def _on_log(self, text: str):
         self.log_edit.append(text)
